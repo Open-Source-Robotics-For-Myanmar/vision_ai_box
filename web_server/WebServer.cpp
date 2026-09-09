@@ -100,7 +100,7 @@ std::string read_static_file(const std::string& file_name)
 }
 
 WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
-    : logger_(logger), camera_(camera), toggles_(toggles)
+    : logger_(logger), camera_(camera), toggles_(toggles), base_system_(logger, camera)
 {
 }
 
@@ -145,6 +145,7 @@ void WebServer::stop() noexcept
 {
     if (!running_.exchange(false)) return;
     stream_generation_.fetch_add(1, std::memory_order_release);
+    base_system_.stop_recording();
     if (listen_socket_ >= 0) {
         shutdown(listen_socket_, SHUT_RDWR);
         close(listen_socket_);
@@ -301,6 +302,34 @@ void WebServer::handle_client(int client_socket)
         json payload = json::array();
         for (const auto& line : lines) payload.push_back(line);
         send_all(client_socket, http_response(200, "application/json", payload.dump()));
+    } else if (method == "GET" && path == "/api/record/status") {
+        send_all(client_socket, http_response(200, "application/json", json_response({
+            {"recording", base_system_.is_recording()},
+            {"current_file", base_system_.current_recording_file()}
+        })));
+    } else if (method == "POST" && path == "/api/record/start") {
+        const bool started = base_system_.start_recording();
+        send_all(client_socket, http_response(started ? 200 : 500, "application/json", json_response({
+            {"recording", base_system_.is_recording()},
+            {"current_file", base_system_.current_recording_file()}
+        })));
+    } else if (method == "POST" && path == "/api/record/stop") {
+        const bool stopped = base_system_.stop_recording();
+        send_all(client_socket, http_response(stopped ? 200 : 500, "application/json", json_response({
+            {"recording", base_system_.is_recording()},
+            {"current_file", base_system_.current_recording_file()}
+        })));
+    } else if (method == "POST" && path == "/api/record/restart") {
+        const bool restarted = base_system_.restart_recording();
+        send_all(client_socket, http_response(restarted ? 200 : 500, "application/json", json_response({
+            {"recording", base_system_.is_recording()},
+            {"current_file", base_system_.current_recording_file()}
+        })));
+    } else if (method == "POST" && path == "/api/record/capture") {
+        const bool captured = base_system_.capture_frame();
+        send_all(client_socket, http_response(captured ? 200 : 500, "application/json", json_response({
+            {"captured", captured}
+        })));
     } else if (method == "GET" && path == "/api/camera/status") {
         send_all(client_socket, http_response(200, "application/json", json_response({
             {"running", camera_.is_running()}, {"processing", toggles_.processing_enabled.load()}

@@ -7,9 +7,15 @@ const cameraStatus = document.querySelector('#camera-status');
 const stream = document.querySelector('#stream');
 const liveDatetime = document.querySelector('#live-datetime');
 const logTerminal = document.querySelector('#log-terminal');
+const recordToggleBtn = document.querySelector('#record-toggle-btn');
+const restartRecordBtn = document.querySelector('#restart-record-btn');
+const captureBtn = document.querySelector('#capture-btn');
+const recordStatusIndicator = document.querySelector('#record-status-indicator');
+const recordStatusText = document.querySelector('#record-status-text');
 
 let toggleRequestActive = false;
 let streamActive = false;
+let recordingRequestActive = false;
 
 // Real-Time Green Clock Function
 function startLiveClock() {
@@ -64,7 +70,7 @@ async function fetchSessionLogs() {
 async function refreshStatus() {
   const status = await request('/api/camera/status');
   cameraToggle.checked = status.running;
-  
+
   if (status.running) {
     cameraStatus.textContent = 'Running';
     cameraStatus.classList.add('active');
@@ -80,6 +86,18 @@ async function refreshStatus() {
   } else if (!status.running && streamActive) {
     stream.removeAttribute('src');
     streamActive = false;
+  }
+
+  try {
+    const recording = await request('/api/record/status');
+    const active = Boolean(recording.recording);
+    const dot = recordStatusIndicator.querySelector('span');
+    dot.style.background = active ? '#ff3b30' : '#666';
+    recordStatusText.textContent = active ? 'Recording' : 'Idle';
+    recordToggleBtn.textContent = active ? 'Stop Record' : 'Start Record';
+    recordToggleBtn.style.background = active ? '#d32f2f' : '#1e88e5';
+  } catch (error) {
+    recordStatusText.textContent = 'Status unavailable';
   }
 }
 
@@ -130,5 +148,61 @@ cameraToggle.addEventListener('change', async () => {
   } finally {
     toggleRequestActive = false;
     cameraToggle.disabled = false;
+  }
+});
+
+recordToggleBtn.addEventListener('click', async () => {
+  if (recordingRequestActive) return;
+  recordingRequestActive = true;
+  recordToggleBtn.disabled = true;
+
+  try {
+    const currentRecording = recordStatusText.textContent === 'Recording';
+    const endpoint = currentRecording ? '/api/record/stop' : '/api/record/start';
+    await request(endpoint, { method: 'POST' });
+    await refreshStatus();
+  } catch (error) {
+    recordStatusText.textContent = error.message;
+  } finally {
+    recordingRequestActive = false;
+    recordToggleBtn.disabled = false;
+  }
+});
+
+restartRecordBtn.addEventListener('click', async () => {
+  if (recordingRequestActive) return;
+  recordingRequestActive = true;
+  restartRecordBtn.disabled = true;
+
+  try {
+    await request('/api/record/restart', { method: 'POST' });
+    await refreshStatus();
+  } catch (error) {
+    recordStatusText.textContent = error.message;
+  } finally {
+    recordingRequestActive = false;
+    restartRecordBtn.disabled = false;
+  }
+});
+
+captureBtn.addEventListener('click', async () => {
+  if (recordingRequestActive) return;
+  recordingRequestActive = true;
+  captureBtn.disabled = true;
+
+  try {
+    const result = await request('/api/record/capture', { method: 'POST' });
+    if (result.captured) {
+      const priorText = recordStatusText.textContent;
+      recordStatusText.textContent = 'Captured';
+      setTimeout(() => {
+        recordStatusText.textContent = priorText;
+      }, 1200);
+    }
+  } catch (error) {
+    recordStatusText.textContent = error.message;
+  } finally {
+    recordingRequestActive = false;
+    captureBtn.disabled = false;
   }
 });

@@ -1,16 +1,9 @@
 #pragma once
 
+#include "BaseSystem.hpp"
 #include "Toggles.hpp"
 #include "core/FrameContext.hpp"
 #include "core/LatestFrameBuffer.hpp"
-
-#ifdef CAMERA_USB
-#include "UsbCamera.hpp"
-using SelectedCamera = UsbCamera;
-#elif defined(CAMERA_REALSENSE)
-#include "RealSenseCamera.hpp"
-using SelectedCamera = RealSenseCamera;
-#endif
 
 #include <atomic>
 #include <cstdint>
@@ -40,6 +33,7 @@ private:
     Logger& logger_;
     SelectedCamera& camera_;
     ServiceToggles& toggles_;
+    BaseSystem base_system_;
     std::atomic<bool> running_{false};
     int listen_socket_{-1};
     std::uint16_t port_{0};

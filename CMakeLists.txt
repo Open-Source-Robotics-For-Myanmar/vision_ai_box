@@ -106,6 +106,7 @@ endif()
 set(VISION_AI_BOX_SOURCES
     main.cpp
     logging/Logger.cpp
+    base_system/Recording.cpp
     web_server/WebServer.cpp
 )
 list(APPEND VISION_AI_BOX_SOURCES ${CAMERA_SOURCES})
@@ -122,6 +123,7 @@ target_include_directories(vision_ai_box
     PRIVATE
     ${INCLUDE_DIR}
     ${PROJECT_ROOT}
+    ${PROJECT_ROOT}/base_system
     ${PROJECT_ROOT}/camera
     ${PROJECT_ROOT}/logging
     ${PROJECT_ROOT}/web_server

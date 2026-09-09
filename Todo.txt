@@ -1,0 +1,16 @@
+start detection toggle
+{
+    start ai pipeline
+    load ai model and allocate memory
+    generate snapshots and detections results and save to disk
+}
+
+stop detection toggle{
+    stop ai pipeline
+    stopping generate snapshots and detections results and save to disk
+    unload ai model and free memory
+}
+
+restart detection toggle{
+    restart ai pipeline
+}

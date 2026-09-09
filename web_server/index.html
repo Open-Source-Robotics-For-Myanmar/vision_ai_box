@@ -174,7 +174,15 @@
               <span id="camera-status">Stopped</span>
             </div>
 
-            <button class="btn">Start Record</button>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span id="record-status-indicator" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:#a0a0a0;">
+                <span style="width:10px; height:10px; border-radius:50%; background:#666; display:inline-block;"></span>
+                <span id="record-status-text">Idle</span>
+              </span>
+              <button id="record-toggle-btn" class="btn btn-secondary">Start Record</button>
+              <button id="restart-record-btn" class="btn btn-secondary">Restart</button>
+              <button id="capture-btn" class="btn btn-secondary">Capture</button>
+            </div>
           </div>
         </div>
 
