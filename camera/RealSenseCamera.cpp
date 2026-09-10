@@ -19,6 +19,18 @@ cv::Mat frame_view(const rs2::video_frame& frame, int type)
 RealSenseCamera::RealSenseCamera(Logger& logger, CameraSettings settings)
     : logger_(logger), settings_(std::move(settings)), depth_enabled_(settings_.depth_enabled) {}
 
+CameraSettings RealSenseCamera::settings() const
+{
+    return settings_;
+}
+
+bool RealSenseCamera::apply_settings(const CameraSettings& settings)
+{
+    settings_ = settings;
+    depth_enabled_ = settings_.depth_enabled;
+    return true;
+}
+
 RealSenseCamera::~RealSenseCamera() { stop(); }
 
 bool RealSenseCamera::initialize()

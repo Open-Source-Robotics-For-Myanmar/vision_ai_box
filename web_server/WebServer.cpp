@@ -21,6 +21,28 @@ namespace
 {
 using json = nlohmann::json;
 
+json serialize_camera_settings(const CameraSettings& settings)
+{
+    json payload = {
+        {"color_width", settings.color_width},
+        {"color_height", settings.color_height},
+        {"color_fps", settings.color_fps},
+        {"auto_exposure", settings.auto_exposure},
+        {"auto_white_balance", settings.auto_white_balance}
+    };
+
+#ifdef CAMERA_USB
+    payload["usb_device_index"] = settings.usb_device_index;
+#elif defined(CAMERA_REALSENSE)
+    payload["depth_enabled"] = settings.depth_enabled;
+    payload["depth_width"] = settings.depth_width;
+    payload["depth_height"] = settings.depth_height;
+    payload["depth_fps"] = settings.depth_fps;
+#endif
+
+    return payload;
+}
+
 std::string json_response(const json& body)
 {
     return body.dump();
@@ -232,6 +254,33 @@ void WebServer::stop_camera()
     toggles_.processing_enabled = false;
 }
 
+CameraSettings WebServer::camera_settings() const
+{
+    return camera_.settings();
+}
+
+bool WebServer::apply_camera_settings(const CameraSettings& settings)
+{
+    std::lock_guard lock(camera_control_mutex_);
+    const bool was_running = camera_.is_running();
+    if (was_running) {
+        camera_.set_processing_enabled(false);
+        camera_.stop();
+    }
+
+    const bool applied = camera_.apply_settings(settings);
+    if (applied && was_running) {
+        if (!camera_.start()) {
+            return false;
+        }
+        toggles_.camera_enabled = true;
+        toggles_.processing_enabled = true;
+        camera_.set_processing_enabled(true);
+        stream_generation_.fetch_add(1, std::memory_order_release);
+    }
+    return applied;
+}
+
 void WebServer::handle_client(int client_socket)
 {
     timeval send_timeout{1, 0};
@@ -337,6 +386,33 @@ void WebServer::handle_client(int client_socket)
         send_all(client_socket, http_response(captured ? 200 : 500, "application/json", json_response({
             {"captured", captured}
         })));
+    } else if (method == "GET" && path == "/api/camera/settings") {
+        send_all(client_socket, http_response(200, "application/json", serialize_camera_settings(camera_settings()).dump()));
+    } else if (method == "POST" && path == "/api/camera/settings") {
+        try {
+            const json payload = json::parse(body);
+            CameraSettings settings = camera_settings();
+            settings.color_width = payload.value("color_width", settings.color_width);
+            settings.color_height = payload.value("color_height", settings.color_height);
+            settings.color_fps = payload.value("color_fps", settings.color_fps);
+            settings.auto_exposure = payload.value("auto_exposure", settings.auto_exposure);
+            settings.auto_white_balance = payload.value("auto_white_balance", settings.auto_white_balance);
+#ifdef CAMERA_USB
+            settings.usb_device_index = payload.value("usb_device_index", settings.usb_device_index);
+#elif defined(CAMERA_REALSENSE)
+            settings.depth_enabled = payload.value("depth_enabled", settings.depth_enabled);
+            settings.depth_width = payload.value("depth_width", settings.depth_width);
+            settings.depth_height = payload.value("depth_height", settings.depth_height);
+            settings.depth_fps = payload.value("depth_fps", settings.depth_fps);
+#endif
+            const bool applied = apply_camera_settings(settings);
+            send_all(client_socket, http_response(applied ? 200 : 500, "application/json", json_response({
+                {"applied", applied},
+                {"settings", serialize_camera_settings(settings)}
+            })));
+        } catch (const std::exception&) {
+            send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
+        }
     } else if (method == "GET" && path == "/api/camera/status") {
         send_all(client_socket, http_response(200, "application/json", json_response({
             {"running", camera_.is_running()}, {"processing", toggles_.processing_enabled.load()}

@@ -1,6 +1,8 @@
 const loginForm = document.querySelector('#login-form');
 const loginContainer = document.querySelector('#login-container');
 const dashboard = document.querySelector('#dashboard');
+const viewVideo = document.querySelector('#view-video');
+const viewOptions = document.querySelector('#view-options');
 const loginMessage = document.querySelector('#login-message');
 const cameraToggle = document.querySelector('#camera-toggle');
 const cameraStatus = document.querySelector('#camera-status');
@@ -12,6 +14,10 @@ const restartRecordBtn = document.querySelector('#restart-record-btn');
 const captureBtn = document.querySelector('#capture-btn');
 const recordStatusIndicator = document.querySelector('#record-status-indicator');
 const recordStatusText = document.querySelector('#record-status-text');
+const cameraSettingsForm = document.querySelector('#camera-settings-form');
+const cancelSettingsBtn = document.querySelector('#cancel-settings-btn');
+const usbDeviceField = document.querySelector('#usb-device-field');
+const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
 
 let toggleRequestActive = false;
 let streamActive = false;
@@ -101,12 +107,81 @@ async function refreshStatus() {
   }
 }
 
+function showView(viewName) {
+  const isVideo = viewName === 'video';
+  viewVideo.hidden = !isVideo;
+  viewOptions.hidden = isVideo;
+
+  navTabs.forEach(tab => {
+    const active = tab.textContent.trim() === (isVideo ? 'Video' : 'Options');
+    tab.classList.toggle('active', active);
+  });
+
+  if (!isVideo && !viewOptions.dataset.loaded) {
+    loadCameraSettings().catch(() => {
+      console.error('Unable to load camera settings');
+    });
+  }
+}
+
+async function loadCameraSettings() {
+  const settings = await request('/api/camera/settings');
+  const form = cameraSettingsForm;
+  form.color_width.value = settings.color_width ?? 640;
+  form.color_height.value = settings.color_height ?? 480;
+  form.color_fps.value = settings.color_fps ?? 30;
+  form.auto_exposure.value = String(Boolean(settings.auto_exposure));
+  form.auto_white_balance.value = String(Boolean(settings.auto_white_balance));
+  form.usb_device_index.value = settings.usb_device_index ?? -1;
+
+  const showUsbField = settings.usb_device_index !== undefined;
+  usbDeviceField.style.display = showUsbField ? 'grid' : 'none';
+  viewOptions.dataset.loaded = 'true';
+}
+
+async function submitCameraSettings(event) {
+  event.preventDefault();
+
+  const payload = {
+    color_width: Number(cameraSettingsForm.color_width.value),
+    color_height: Number(cameraSettingsForm.color_height.value),
+    color_fps: Number(cameraSettingsForm.color_fps.value),
+    auto_exposure: cameraSettingsForm.auto_exposure.value === 'true',
+    auto_white_balance: cameraSettingsForm.auto_white_balance.value === 'true'
+  };
+
+  if (cameraSettingsForm.usb_device_index) {
+    payload.usb_device_index = Number(cameraSettingsForm.usb_device_index.value);
+  }
+
+  await request('/api/camera/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  alert('Camera settings updated.');
+  showView('video');
+}
+
 // Initialize Dashboard & Timers
 startLiveClock();
+
+navTabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    const label = tab.textContent.trim();
+    if (label === 'Video') showView('video');
+    if (label === 'Options') showView('options');
+  });
+});
+
+cameraSettingsForm.addEventListener('submit', submitCameraSettings);
+cancelSettingsBtn.addEventListener('click', () => showView('video'));
 
 if (window.location.pathname === '/dashboard') {
   loginContainer.hidden = true;
   dashboard.hidden = false;
+  showView('video');
   refreshStatus().catch(error => { cameraStatus.textContent = error.message; });
   
   fetchSessionLogs();

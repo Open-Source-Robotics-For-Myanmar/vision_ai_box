@@ -8,6 +8,17 @@
 UsbCamera::UsbCamera(Logger& logger, CameraSettings settings)
     : logger_(logger), settings_(std::move(settings)) {}
 
+CameraSettings UsbCamera::settings() const
+{
+    return settings_;
+}
+
+bool UsbCamera::apply_settings(const CameraSettings& settings)
+{
+    settings_ = settings;
+    return true;
+}
+
 UsbCamera::~UsbCamera() { stop(); }
 
 bool UsbCamera::initialize()

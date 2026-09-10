@@ -157,143 +157,187 @@
     </div>
 
     <!-- 2. Dashboard -->
-    <div id="dashboard" class="dashboard-grid" hidden>
+    <div id="view-video">
+      <div id="dashboard" class="dashboard-grid" hidden>
       
-      <!-- Left Column: Stream, Table & Terminal Logs -->
-      <div class="left-panel">
-        <div class="video-card">
-          <div class="video-viewport">
-            <div id="live-datetime" class="camera-info-overlay">--/--/---- --:--:--</div>
-            <img id="stream" alt="Live camera stream" hidden>
-          </div>
-
-          <div class="toolbar">
-            <div class="switch-container">
-              <input id="camera-toggle" type="checkbox">
-              <label for="camera-toggle" style="cursor: pointer;">Camera Power</label>
-              <span id="camera-status">Stopped</span>
+        <!-- Left Column: Stream, Table & Terminal Logs -->
+        <div class="left-panel">
+          <div class="video-card">
+            <div class="video-viewport">
+              <div id="live-datetime" class="camera-info-overlay">--/--/---- --:--:--</div>
+              <img id="stream" alt="Live camera stream" hidden>
             </div>
 
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span id="record-status-indicator" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:#a0a0a0;">
-                <span style="width:10px; height:10px; border-radius:50%; background:#666; display:inline-block;"></span>
-                <span id="record-status-text">Idle</span>
-              </span>
-              <button id="record-toggle-btn" class="btn btn-secondary">Start Record</button>
-              <button id="restart-record-btn" class="btn btn-secondary">Restart</button>
-              <button id="capture-btn" class="btn btn-secondary">Capture</button>
+            <div class="toolbar">
+              <div class="switch-container">
+                <input id="camera-toggle" type="checkbox">
+                <label for="camera-toggle" style="cursor: pointer;">Camera Power</label>
+                <span id="camera-status">Stopped</span>
+              </div>
+
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span id="record-status-indicator" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; color:#a0a0a0;">
+                  <span style="width:10px; height:10px; border-radius:50%; background:#666; display:inline-block;"></span>
+                  <span id="record-status-text">Idle</span>
+                </span>
+                <button id="record-toggle-btn" class="btn btn-secondary">Start Record</button>
+                <button id="restart-record-btn" class="btn btn-secondary">Restart</button>
+                <button id="capture-btn" class="btn btn-secondary">Capture</button>
+              </div>
             </div>
+          </div>
+
+          <!-- Detection History Table -->
+          <div class="table-container">
+            <table class="anpr-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Plate</th>
+                  <th>Width</th>
+                  <th>White List</th>
+                  <th>Trigger</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="highlight">
+                  <td>2026-03-15 10:11:31</td>
+                  <td>B98C4D97</td>
+                  <td>370Pixel</td>
+                  <td>Virtual ground coil</td>
+                  <td>Other</td>
+                </tr>
+                <tr>
+                  <td>2026-03-15 10:11:25</td>
+                  <td>02710097</td>
+                  <td>195Pixel</td>
+                  <td>Virtual ground coil</td>
+                  <td>Other</td>
+                </tr>
+                <tr>
+                  <td>2026-03-15 09:45:12</td>
+                  <td>7B12345</td>
+                  <td>210Pixel</td>
+                  <td>Manual Trigger</td>
+                  <td>Allowed</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- System Console Logs Terminal Panel (Fills Remaining Space) -->
+          <div class="log-panel">
+            <div class="panel-title">System Console Logs</div>
+            <div id="log-terminal">Loading session logs...</div>
           </div>
         </div>
 
-        <!-- Detection History Table -->
-        <div class="table-container">
-          <table class="anpr-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Plate</th>
-                <th>Width</th>
-                <th>White List</th>
-                <th>Trigger</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr class="highlight">
-                <td>2026-03-15 10:11:31</td>
-                <td>B98C4D97</td>
-                <td>370Pixel</td>
-                <td>Virtual ground coil</td>
-                <td>Other</td>
-              </tr>
-              <tr>
-                <td>2026-03-15 10:11:25</td>
-                <td>02710097</td>
-                <td>195Pixel</td>
-                <td>Virtual ground coil</td>
-                <td>Other</td>
-              </tr>
-              <tr>
-                <td>2026-03-15 09:45:12</td>
-                <td>7B12345</td>
-                <td>210Pixel</td>
-                <td>Manual Trigger</td>
-                <td>Allowed</td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- Right Column: Results & Hardware Settings -->
+        <div class="right-panel">
+          
+          <!-- Video Snapshot & Recognition Results -->
+          <div class="panel-box">
+            <div class="panel-title">Video Snapshot</div>
+            <div class="snapshot-grid">
+              <div class="snapshot-item">
+                <div style="color: #555; font-size: 11px;">[Image]</div>
+                <div class="snapshot-label">Snapshot image</div>
+              </div>
+              <div class="snapshot-item">
+                <div style="color: #555; font-size: 11px;">[Picture]</div>
+                <div class="snapshot-label">Plate picture</div>
+              </div>
+            </div>
+
+            <div class="plate-result-box">
+              <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 2px;">Recognition result</div>
+              <div class="plate-number">-- -- --</div>
+            </div>
+            <button class="btn" style="width: 100%; margin-top: 8px;">Trigger</button>
+          </div>
+
+          <!-- Camera Status Information -->
+          <div class="panel-box">
+            <div class="panel-title">Device Info</div>
+            <div class="info-list">
+              <div class="info-row"><span class="info-label">Name</span><span>MS-ANPR-01</span></div>
+              <div class="info-row"><span class="info-label">IP</span><span>172.16.1.88</span></div>
+              <div class="info-row"><span class="info-label">Time</span><span>2026-03-15 10:11:32</span></div>
+              <div class="info-row"><span class="info-label">Mode</span><span>NTP Synchronize</span></div>
+              <div class="info-row"><span class="info-label">Version</span><span>8.3.1.232303063</span></div>
+              <div class="info-row"><span class="info-label">State</span><span style="color: #00ff00;">Online</span></div>
+            </div>
+          </div>
+
+          <!-- Hardware Controls -->
+          <div class="panel-box">
+            <div class="panel-title">Hardware Controls</div>
+            <div class="control-group">
+              <label class="info-label">Getaway</label>
+              <select><option>Entrance</option><option>Exit</option></select>
+            </div>
+            <div class="control-group">
+              <label class="info-label">Direction</label>
+              <select><option>Both</option><option>Inbound</option><option>Outbound</option></select>
+            </div>
+            <div class="control-group">
+              <label class="info-label">LED</label>
+              <select><option>Manual LED</option><option>Auto Sensor</option></select>
+            </div>
+            <div style="margin-top: 8px;">
+              <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-bottom: 4px;">
+                <span>LED Param</span>
+                <span>4 meters</span>
+              </div>
+              <button class="btn btn-secondary" style="width: 100%; font-size: 10px;">Schedule Turn Off</button>
+            </div>
+          </div>
+
         </div>
 
-        <!-- System Console Logs Terminal Panel (Fills Remaining Space) -->
-        <div class="log-panel">
-          <div class="panel-title">System Console Logs</div>
-          <div id="log-terminal">Loading session logs...</div>
-        </div>
       </div>
+    </div>
 
-      <!-- Right Column: Results & Hardware Settings -->
-      <div class="right-panel">
-        
-        <!-- Video Snapshot & Recognition Results -->
-        <div class="panel-box">
-          <div class="panel-title">Video Snapshot</div>
-          <div class="snapshot-grid">
-            <div class="snapshot-item">
-              <div style="color: #555; font-size: 11px;">[Image]</div>
-              <div class="snapshot-label">Snapshot image</div>
-            </div>
-            <div class="snapshot-item">
-              <div style="color: #555; font-size: 11px;">[Picture]</div>
-              <div class="snapshot-label">Plate picture</div>
-            </div>
+    <div id="view-options" hidden>
+      <div class="panel-box" style="max-width: 720px; margin: 24px auto;">
+        <div class="panel-title">Camera Settings</div>
+        <form id="camera-settings-form" style="display: grid; gap: 12px; margin-top: 12px;">
+          <div class="control-group" style="grid-template-columns: 140px 1fr;">
+            <label for="color_width">Color Width</label>
+            <input id="color_width" name="color_width" type="number" min="160" max="3840" step="1">
           </div>
-
-          <div class="plate-result-box">
-            <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 2px;">Recognition result</div>
-            <div class="plate-number">-- -- --</div>
+          <div class="control-group" style="grid-template-columns: 140px 1fr;">
+            <label for="color_height">Color Height</label>
+            <input id="color_height" name="color_height" type="number" min="120" max="2160" step="1">
           </div>
-          <button class="btn" style="width: 100%; margin-top: 8px;">Trigger</button>
-        </div>
-
-        <!-- Camera Status Information -->
-        <div class="panel-box">
-          <div class="panel-title">Device Info</div>
-          <div class="info-list">
-            <div class="info-row"><span class="info-label">Name</span><span>MS-ANPR-01</span></div>
-            <div class="info-row"><span class="info-label">IP</span><span>172.16.1.88</span></div>
-            <div class="info-row"><span class="info-label">Time</span><span>2026-03-15 10:11:32</span></div>
-            <div class="info-row"><span class="info-label">Mode</span><span>NTP Synchronize</span></div>
-            <div class="info-row"><span class="info-label">Version</span><span>8.3.1.232303063</span></div>
-            <div class="info-row"><span class="info-label">State</span><span style="color: #00ff00;">Online</span></div>
+          <div class="control-group" style="grid-template-columns: 140px 1fr;">
+            <label for="color_fps">Color FPS</label>
+            <input id="color_fps" name="color_fps" type="number" min="1" max="120" step="1">
           </div>
-        </div>
-
-        <!-- Hardware Controls -->
-        <div class="panel-box">
-          <div class="panel-title">Hardware Controls</div>
-          <div class="control-group">
-            <label class="info-label">Getaway</label>
-            <select><option>Entrance</option><option>Exit</option></select>
+          <div class="control-group" style="grid-template-columns: 140px 1fr;">
+            <label for="auto_exposure">Auto Exposure</label>
+            <select id="auto_exposure" name="auto_exposure">
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
           </div>
-          <div class="control-group">
-            <label class="info-label">Direction</label>
-            <select><option>Both</option><option>Inbound</option><option>Outbound</option></select>
+          <div class="control-group" style="grid-template-columns: 140px 1fr;">
+            <label for="auto_white_balance">Auto White Balance</label>
+            <select id="auto_white_balance" name="auto_white_balance">
+              <option value="true">Enabled</option>
+              <option value="false">Disabled</option>
+            </select>
           </div>
-          <div class="control-group">
-            <label class="info-label">LED</label>
-            <select><option>Manual LED</option><option>Auto Sensor</option></select>
+          <div class="control-group" id="usb-device-field" style="grid-template-columns: 140px 1fr; display: none;">
+            <label for="usb_device_index">Device Index</label>
+            <input id="usb_device_index" name="usb_device_index" type="number" min="-1" max="15" step="1">
           </div>
-          <div style="margin-top: 8px;">
-            <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-bottom: 4px;">
-              <span>LED Param</span>
-              <span>4 meters</span>
-            </div>
-            <button class="btn btn-secondary" style="width: 100%; font-size: 10px;">Schedule Turn Off</button>
+          <div style="display: flex; justify-content: flex-end; gap: 8px;">
+            <button type="button" class="btn btn-secondary" id="cancel-settings-btn">Cancel</button>
+            <button type="submit" class="btn">Apply Settings</button>
           </div>
-        </div>
-
+        </form>
       </div>
-
     </div>
   </main>
 

@@ -21,6 +21,9 @@ public:
     explicit RealSenseCamera(Logger& logger, CameraSettings settings = {});
     ~RealSenseCamera();
 
+    CameraSettings settings() const;
+    bool apply_settings(const CameraSettings& settings);
+
     bool start();
     void stop() noexcept;
     void set_processing_enabled(bool enabled) noexcept;

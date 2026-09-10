@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BaseSystem.hpp"
+#include "CameraSettings.hpp"
 #include "FrameContext.hpp"
 #include "Toggles.hpp"
 
@@ -28,6 +29,8 @@ private:
     bool is_authenticated(const std::string& request) const;
     bool start_camera();
     void stop_camera();
+    CameraSettings camera_settings() const;
+    bool apply_camera_settings(const CameraSettings& settings);
 
     Logger& logger_;
     SelectedCamera& camera_;
