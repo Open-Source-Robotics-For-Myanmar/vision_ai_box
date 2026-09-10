@@ -14,20 +14,10 @@ cv::Mat frame_view(const rs2::video_frame& frame, int type)
     return {cv::Size(frame.get_width(), frame.get_height()), type,
             const_cast<void*>(frame.get_data()), cv::Mat::AUTO_STEP};
 }
-
-void apply_sensor_defaults(rs2::sensor& sensor)
-{
-    if (sensor.supports(RS2_OPTION_ENABLE_AUTO_EXPOSURE)) {
-        sensor.set_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE, 1.0f);
-    }
-    if (sensor.supports(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE)) {
-        sensor.set_option(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE, 1.0f);
-    }
-}
 }
 
-RealSenseCamera::RealSenseCamera(Logger& logger, bool enable_depth)
-    : logger_(logger), depth_enabled_(enable_depth) {}
+RealSenseCamera::RealSenseCamera(Logger& logger, CameraSettings settings)
+    : logger_(logger), settings_(std::move(settings)), depth_enabled_(settings_.depth_enabled) {}
 
 RealSenseCamera::~RealSenseCamera() { stop(); }
 
@@ -69,13 +59,21 @@ bool RealSenseCamera::initialize()
 
 void RealSenseCamera::configure_color()
 {
-    config_.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
+    config_.enable_stream(RS2_STREAM_COLOR,
+        settings_.color_width,
+        settings_.color_height,
+        settings_.color_format,
+        settings_.color_fps);
 }
 
 void RealSenseCamera::configure_depth()
 {
     if (depth_enabled_) {
-        config_.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
+        config_.enable_stream(RS2_STREAM_DEPTH,
+            settings_.depth_width,
+            settings_.depth_height,
+            settings_.depth_format,
+            settings_.depth_fps);
     }
 }
 
@@ -83,6 +81,16 @@ void RealSenseCamera::configure_alignment()
 {
     if (depth_enabled_) {
         align_to_color_ = std::make_unique<rs2::align>(RS2_STREAM_COLOR);
+    }
+}
+
+void RealSenseCamera::apply_sensor_defaults(rs2::sensor& sensor)
+{
+    if (settings_.auto_exposure && sensor.supports(RS2_OPTION_ENABLE_AUTO_EXPOSURE)) {
+        sensor.set_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE, settings_.auto_exposure_val);
+    }
+    if (settings_.auto_white_balance && sensor.supports(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE)) {
+        sensor.set_option(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE, settings_.auto_white_balance_val);
     }
 }
 
@@ -130,7 +138,7 @@ void RealSenseCamera::set_processing_enabled(bool enabled) noexcept { processing
 
 bool RealSenseCamera::is_running() const noexcept { return running_; }
 
-bool RealSenseCamera::latest_frame(core::FrameContext& frame)
+bool RealSenseCamera::latest_frame(FrameContext& frame)
 {
     std::lock_guard lock(latest_frame_mutex_);
     if (!latest_frame_ || latest_frame_->empty()) {
@@ -143,7 +151,7 @@ bool RealSenseCamera::latest_frame(core::FrameContext& frame)
     return true;
 }
 
-void RealSenseCamera::register_frame_callback(std::function<void(const core::FrameContext&)> callback)
+void RealSenseCamera::register_frame_callback(std::function<void(const FrameContext&)> callback)
 {
     if (!callback) {
         return;
@@ -184,7 +192,7 @@ void RealSenseCamera::acquisition_loop()
                 continue;
             }
 
-            core::FrameContext next;
+            FrameContext next;
             next.sequence = ++sequence;
             // Clone here so downstream async consumers never share the raw
             // librealsense buffer after the frameset goes out of scope.
@@ -203,7 +211,7 @@ void RealSenseCamera::acquisition_loop()
                 latest_sequence_.store(next.sequence, std::memory_order_release);
             }
 
-            std::vector<std::function<void(const core::FrameContext&)>> callbacks;
+            std::vector<std::function<void(const FrameContext&)>> callbacks;
             {
                 std::lock_guard lock(callbacks_mutex_);
                 callbacks = frame_callbacks_;

@@ -10,63 +10,10 @@
 #include <opencv2/imgcodecs.hpp>
 #include <thread>
 
-namespace
-{
-std::string make_recording_stamp()
-{
-    const auto now = std::chrono::system_clock::now();
-    const auto time = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-#if defined(_WIN32)
-    localtime_s(&tm, &time);
-#else
-    localtime_r(&time, &tm);
-#endif
-
-    char buffer[32];
-    std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm);
-    return std::string(buffer);
-}
-
-int resolve_fourcc()
-{
-    const char* configured_fourcc = std::getenv("VISION_AI_BOX_FOURCC");
-    if (configured_fourcc && std::strlen(configured_fourcc) == 4) {
-        return cv::VideoWriter::fourcc(
-            configured_fourcc[0],
-            configured_fourcc[1],
-            configured_fourcc[2],
-            configured_fourcc[3]
-        );
-    }
-
-    return cv::VideoWriter::fourcc('m', 'p', '4', 'v');
-}
-
-bool try_open_writer(cv::VideoWriter& writer, const std::string& file_path, const cv::Size& frame_size)
-{
-    const int fourcc = resolve_fourcc();
-    const double fps = 30.0;
-
-    const char* gst_pipeline = std::getenv("VISION_AI_BOX_GSTREAMER_PIPELINE");
-    if (gst_pipeline && *gst_pipeline) {
-        if (writer.open(gst_pipeline, cv::CAP_GSTREAMER, fourcc, fps, frame_size, true)) {
-            return true;
-        }
-    }
-
-    if (writer.open(file_path, fourcc, fps, frame_size, true)) {
-        return true;
-    }
-
-    return false;
-}
-} // namespace
-
 BaseSystem::BaseSystem(Logger& logger, SelectedCamera& camera)
     : logger_(logger), camera_(camera)
 {
-    camera_.register_frame_callback([this](const core::FrameContext& frame) {
+    camera_.register_frame_callback([this](const FrameContext& frame) {
         on_frame_received(frame);
     });
 }
@@ -123,7 +70,7 @@ bool BaseSystem::capture_frame()
         return false;
     }
 
-    core::FrameContext frame;
+    FrameContext frame;
     if (!camera_.latest_frame(frame) || !frame.color || frame.color->empty()) {
         logger_.log(LogLevel::WARN, "BASE_SYSTEM", "Snapshot capture failed: no valid frame available");
         return false;
@@ -148,7 +95,7 @@ bool BaseSystem::capture_frame()
     return true;
 }
 
-void BaseSystem::on_frame_received(const core::FrameContext& frame)
+void BaseSystem::on_frame_received(const FrameContext& frame)
 {
     if (!recording_active_.load(std::memory_order_acquire) || !frame.color || frame.color->empty()) {
         return;
@@ -202,6 +149,56 @@ void BaseSystem::close_writer()
         logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Closing video writer: " + current_recording_file_);
         writer_.release();
     }
+}
+
+std::string BaseSystem::make_recording_stamp()
+{
+    const auto now = std::chrono::system_clock::now();
+    const auto time = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &time);
+#else
+    localtime_r(&time, &tm);
+#endif
+
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm);
+    return std::string(buffer);
+}
+
+int BaseSystem::resolve_fourcc()
+{
+    const char* configured_fourcc = std::getenv("VISION_AI_BOX_FOURCC");
+    if (configured_fourcc && std::strlen(configured_fourcc) == 4) {
+        return cv::VideoWriter::fourcc(
+            configured_fourcc[0],
+            configured_fourcc[1],
+            configured_fourcc[2],
+            configured_fourcc[3]
+        );
+    }
+
+    return cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+}
+
+bool BaseSystem::try_open_writer(cv::VideoWriter& writer, const std::string& file_path, const cv::Size& frame_size)
+{
+    const int fourcc = resolve_fourcc();
+    const double fps = 30.0;
+
+    const char* gst_pipeline = std::getenv("VISION_AI_BOX_GSTREAMER_PIPELINE");
+    if (gst_pipeline && *gst_pipeline) {
+        if (writer.open(gst_pipeline, cv::CAP_GSTREAMER, fourcc, fps, frame_size, true)) {
+            return true;
+        }
+    }
+
+    if (writer.open(file_path, fourcc, fps, frame_size, true)) {
+        return true;
+    }
+
+    return false;
 }
 
 std::string BaseSystem::make_timestamp()

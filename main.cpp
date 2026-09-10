@@ -1,3 +1,4 @@
+#include "CameraSettings.hpp"
 #include "Toggles.hpp"
 #include "Logger.hpp"
 #include "WebServer.hpp"
@@ -32,11 +33,18 @@ int main()
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
+    CameraSettings settings;
+#ifdef CAMERA_REALSENSE
+    settings.depth_enabled = true;
+#endif
+    settings.auto_exposure = true;
+    settings.auto_white_balance = true;
+
 #ifdef CAMERA_USB
-    UsbCamera camera(logger);
+    UsbCamera camera(logger, settings);
 
 #elif defined(CAMERA_REALSENSE)
-    RealSenseCamera camera(logger);
+    RealSenseCamera camera(logger, settings);
 
 #else
 

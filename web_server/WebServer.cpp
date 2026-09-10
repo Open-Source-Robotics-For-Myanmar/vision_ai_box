@@ -102,7 +102,7 @@ std::string read_static_file(const std::string& file_name)
 WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
     : logger_(logger), camera_(camera), toggles_(toggles), base_system_(logger, camera)
 {
-    camera_.register_frame_callback([this](const core::FrameContext& frame) {
+    camera_.register_frame_callback([this](const FrameContext& frame) {
         if (!frame.color || frame.color->empty()) {
             return;
         }

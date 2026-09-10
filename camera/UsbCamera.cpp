@@ -5,7 +5,8 @@
 #include <chrono>
 #include <string>
 
-UsbCamera::UsbCamera(Logger& logger) : logger_(logger) {}
+UsbCamera::UsbCamera(Logger& logger, CameraSettings settings)
+    : logger_(logger), settings_(std::move(settings)) {}
 
 UsbCamera::~UsbCamera() { stop(); }
 
@@ -29,8 +30,18 @@ bool UsbCamera::initialize()
 
 bool UsbCamera::open_device()
 {
-    int selected_device = -1;
+    const int preferred = settings_.usb_device_index;
+    if (preferred >= 0 && capture_.open(preferred, cv::CAP_V4L2)) {
+        logger_.log(LogLevel::INFO, "CAMERA", "Opened USB camera device index " + std::to_string(preferred));
+        return true;
+    }
+
+    if (preferred >= 0) {
+        capture_.release();
+    }
+
     constexpr int candidate_indices[] = {1, 2, 3, 0, 4, 5, 6, 7};
+    int selected_device = -1;
     for (const int device_index : candidate_indices) {
         if (capture_.open(device_index, cv::CAP_V4L2)) {
             selected_device = device_index;
@@ -48,9 +59,9 @@ bool UsbCamera::open_device()
 
 void UsbCamera::configure()
 {
-    capture_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-    capture_.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-    capture_.set(cv::CAP_PROP_FPS, 30);
+    capture_.set(cv::CAP_PROP_FRAME_WIDTH, settings_.color_width);
+    capture_.set(cv::CAP_PROP_FRAME_HEIGHT, settings_.color_height);
+    capture_.set(cv::CAP_PROP_FPS, settings_.color_fps);
 }
 
 bool UsbCamera::verify_frame()
@@ -89,7 +100,7 @@ void UsbCamera::stop() noexcept
 
 void UsbCamera::set_processing_enabled(bool enabled) noexcept { processing_enabled_ = enabled; }
 
-void UsbCamera::register_frame_callback(std::function<void(const core::FrameContext&)> callback)
+void UsbCamera::register_frame_callback(std::function<void(const FrameContext&)> callback)
 {
     if (!callback) {
         return;
@@ -98,7 +109,7 @@ void UsbCamera::register_frame_callback(std::function<void(const core::FrameCont
     frame_callbacks_.push_back(std::move(callback));
 }
 
-bool UsbCamera::latest_frame(core::FrameContext& frame)
+bool UsbCamera::latest_frame(FrameContext& frame)
 {
     std::lock_guard lock(latest_frame_mutex_);
     if (!latest_frame_ || latest_frame_->empty()) {
@@ -136,7 +147,7 @@ void UsbCamera::acquisition_loop()
             }
         }
 
-        core::FrameContext next;
+        FrameContext next;
         next.sequence = ++sequence;
         next.color = std::make_shared<cv::Mat>(frame);
 
@@ -146,7 +157,7 @@ void UsbCamera::acquisition_loop()
             latest_sequence_.store(next.sequence, std::memory_order_release);
         }
 
-        std::vector<std::function<void(const core::FrameContext&)>> callbacks;
+        std::vector<std::function<void(const FrameContext&)>> callbacks;
         {
             std::lock_guard lock(callbacks_mutex_);
             callbacks = frame_callbacks_;
