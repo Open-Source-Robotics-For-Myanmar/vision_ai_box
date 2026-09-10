@@ -1,15 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <cstdint>
-#include <opencv2/core.hpp>
-
-struct FrameContext
-{
-    std::uint64_t sequence{0};
-    cv::Mat color;
-    cv::Mat depth;
-};
 
 struct ServiceToggles
 {

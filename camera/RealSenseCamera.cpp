@@ -132,12 +132,24 @@ bool RealSenseCamera::is_running() const noexcept { return running_; }
 
 bool RealSenseCamera::latest_frame(core::FrameContext& frame)
 {
-    const auto snapshot = frame_buffer_.consume_latest();
-    if (!snapshot) return false;
-
-    // cv::Mat uses reference-counted storage, so a value copy is cheap.
-    frame = *snapshot;
+    std::lock_guard lock(latest_frame_mutex_);
+    if (!latest_frame_ || latest_frame_->empty()) {
+        frame = {};
+        return false;
+    }
+    frame.sequence = latest_sequence_.load(std::memory_order_acquire);
+    frame.color = latest_frame_;
+    frame.depth.reset();
     return true;
+}
+
+void RealSenseCamera::register_frame_callback(std::function<void(const core::FrameContext&)> callback)
+{
+    if (!callback) {
+        return;
+    }
+    std::lock_guard lock(callbacks_mutex_);
+    frame_callbacks_.push_back(std::move(callback));
 }
 
 void RealSenseCamera::acquisition_loop()
@@ -174,20 +186,34 @@ void RealSenseCamera::acquisition_loop()
 
             core::FrameContext next;
             next.sequence = ++sequence;
-
-            // Request BGR8 natively to avoid an extra RGB->BGR CPU conversion.
-            next.color = raw_color.clone();
+            // Clone here so downstream async consumers never share the raw
+            // librealsense buffer after the frameset goes out of scope.
+            next.color = std::make_shared<cv::Mat>(raw_color.clone());
 
             if (depth_enabled_) {
                 const cv::Mat depth = frame_view(frames.get_depth_frame(), CV_16UC1);
                 if (!depth.empty()) {
-                    next.depth = depth.clone();
+                    next.depth = std::make_shared<cv::Mat>(depth.clone());
                 }
             }
 
-            // Publish a refcounted snapshot; no mutex is held while the web
-            // stream reads it and no DMA-backed frame pointers are retained.
-            frame_buffer_.publish(std::move(next));
+            {
+                std::lock_guard lock(latest_frame_mutex_);
+                latest_frame_ = next.color;
+                latest_sequence_.store(next.sequence, std::memory_order_release);
+            }
+
+            std::vector<std::function<void(const core::FrameContext&)>> callbacks;
+            {
+                std::lock_guard lock(callbacks_mutex_);
+                callbacks = frame_callbacks_;
+            }
+
+            for (const auto& callback : callbacks) {
+                if (callback) {
+                    callback(next);
+                }
+            }
         } catch (const rs2::error& error) {
             logger_.log(LogLevel::WARN, "CAMERA", std::string("RealSense frame read failed: ") + error.what());
             std::this_thread::sleep_for(std::chrono::milliseconds(100));

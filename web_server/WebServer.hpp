@@ -3,7 +3,6 @@
 #include "BaseSystem.hpp"
 #include "Toggles.hpp"
 #include "core/FrameContext.hpp"
-#include "core/LatestFrameBuffer.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -44,5 +43,7 @@ private:
     std::vector<int> client_sockets_;
     std::vector<std::thread> client_threads_;
     mutable std::mutex sessions_mutex_;
+    mutable std::mutex stream_mutex_;
+    std::shared_ptr<cv::Mat> latest_stream_frame_;
     std::vector<std::string> sessions_;
 };

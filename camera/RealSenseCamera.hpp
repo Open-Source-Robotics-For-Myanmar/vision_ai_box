@@ -2,14 +2,15 @@
 
 #include "Toggles.hpp"
 #include "core/FrameContext.hpp"
-#include "core/LatestFrameBuffer.hpp"
 
 #include <librealsense2/rs.hpp>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 class Logger;
 
@@ -22,6 +23,7 @@ public:
     bool start();
     void stop() noexcept;
     void set_processing_enabled(bool enabled) noexcept;
+    void register_frame_callback(std::function<void(const core::FrameContext&)> callback);
     bool latest_frame(core::FrameContext& frame);
     bool is_running() const noexcept;
 
@@ -39,7 +41,11 @@ private:
     rs2::config config_;
     std::unique_ptr<rs2::align> align_to_color_;
     mutable std::mutex pipeline_mutex_;
-    core::LatestFrameBuffer<core::FrameContext> frame_buffer_;
+    std::mutex callbacks_mutex_;
+    std::mutex latest_frame_mutex_;
+    std::vector<std::function<void(const core::FrameContext&)>> frame_callbacks_;
+    std::shared_ptr<cv::Mat> latest_frame_;
+    std::atomic<std::uint64_t> latest_sequence_{0};
     std::thread worker_;
     std::atomic<bool> initialized_{false};
     std::atomic<bool> running_{false};

@@ -11,10 +11,13 @@ using SelectedCamera = RealSenseCamera;
 #endif
 
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <opencv2/videoio.hpp>
 #include <string>
 #include <thread>
+#include <utility>
 
 class Logger;
 
@@ -28,11 +31,13 @@ public:
     bool stop_recording();
     bool restart_recording();
     bool capture_frame();
+    void on_frame_received(const core::FrameContext& frame);
     bool is_recording() const noexcept;
     std::string current_recording_file() const;
 
 private:
-    void recording_loop();
+    void open_writer_if_needed(const cv::Mat& frame);
+    void close_writer();
     static std::string make_timestamp();
 
     Logger& logger_;
@@ -41,6 +46,7 @@ private:
     std::mutex writer_mutex_;
     std::thread recording_thread_;
     std::atomic<bool> recording_active_{false};
+    std::atomic<std::uint64_t> last_written_sequence_{0};
     std::string current_recording_file_;
     cv::VideoWriter writer_;
 };

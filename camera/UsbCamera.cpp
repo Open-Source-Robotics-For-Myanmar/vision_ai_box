@@ -89,13 +89,25 @@ void UsbCamera::stop() noexcept
 
 void UsbCamera::set_processing_enabled(bool enabled) noexcept { processing_enabled_ = enabled; }
 
+void UsbCamera::register_frame_callback(std::function<void(const core::FrameContext&)> callback)
+{
+    if (!callback) {
+        return;
+    }
+    std::lock_guard lock(callbacks_mutex_);
+    frame_callbacks_.push_back(std::move(callback));
+}
+
 bool UsbCamera::latest_frame(core::FrameContext& frame)
 {
-    const auto snapshot = frame_buffer_.consume_latest();
-    if (!snapshot) return false;
-
-    // cv::Mat uses ref-counted storage, so copying the FrameContext is cheap.
-    frame = *snapshot;
+    std::lock_guard lock(latest_frame_mutex_);
+    if (!latest_frame_ || latest_frame_->empty()) {
+        frame = {};
+        return false;
+    }
+    frame.sequence = latest_sequence_.load(std::memory_order_acquire);
+    frame.color = latest_frame_;
+    frame.depth.reset();
     return true;
 }
 
@@ -112,8 +124,6 @@ void UsbCamera::acquisition_loop()
 
         cv::Mat frame;
         {
-            // Keep hardware I/O out of the mutex. The mutex is only used for
-            // state/control operations that need to coordinate with stop().
             std::lock_guard lock(capture_mutex_);
             if (!capture_.read(frame) || frame.empty()) {
                 const auto now = std::chrono::steady_clock::now();
@@ -128,8 +138,25 @@ void UsbCamera::acquisition_loop()
 
         core::FrameContext next;
         next.sequence = ++sequence;
-        next.color = frame;
-        frame_buffer_.publish(std::move(next));
+        next.color = std::make_shared<cv::Mat>(frame);
+
+        {
+            std::lock_guard lock(latest_frame_mutex_);
+            latest_frame_ = next.color;
+            latest_sequence_.store(next.sequence, std::memory_order_release);
+        }
+
+        std::vector<std::function<void(const core::FrameContext&)>> callbacks;
+        {
+            std::lock_guard lock(callbacks_mutex_);
+            callbacks = frame_callbacks_;
+        }
+
+        for (const auto& callback : callbacks) {
+            if (callback) {
+                callback(next);
+            }
+        }
     }
 }
 

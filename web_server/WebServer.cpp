@@ -102,6 +102,13 @@ std::string read_static_file(const std::string& file_name)
 WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
     : logger_(logger), camera_(camera), toggles_(toggles), base_system_(logger, camera)
 {
+    camera_.register_frame_callback([this](const core::FrameContext& frame) {
+        if (!frame.color || frame.color->empty()) {
+            return;
+        }
+        std::lock_guard lock(stream_mutex_);
+        latest_stream_frame_ = frame.color;
+    });
 }
 
 WebServer::~WebServer()
@@ -347,14 +354,18 @@ void WebServer::handle_client(int client_socket)
         if (send_all(client_socket, header)) {
             while (running_ && camera_.is_running() &&
                    stream_generation == stream_generation_.load(std::memory_order_acquire)) {
-                core::FrameContext frame;
-                if (!camera_.latest_frame(frame)) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                std::shared_ptr<cv::Mat> frame_ptr;
+                {
+                    std::lock_guard lock(stream_mutex_);
+                    frame_ptr = latest_stream_frame_;
+                }
+                if (!frame_ptr || frame_ptr->empty()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 }
 
                 std::vector<uchar> encoded;
-                if (!cv::imencode(".jpg", frame.color, encoded, {cv::IMWRITE_JPEG_QUALITY, 80})) break;
+                if (!cv::imencode(".jpg", *frame_ptr, encoded, {cv::IMWRITE_JPEG_QUALITY, 80})) break;
 
                 const std::string prefix = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
                     std::to_string(encoded.size()) + "\r\n\r\n";

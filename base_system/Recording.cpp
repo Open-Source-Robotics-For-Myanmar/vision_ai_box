@@ -3,6 +3,9 @@
 #include "Logger.hpp"
 
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <opencv2/imgcodecs.hpp>
 #include <thread>
@@ -24,11 +27,48 @@ std::string make_recording_stamp()
     std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm);
     return std::string(buffer);
 }
+
+int resolve_fourcc()
+{
+    const char* configured_fourcc = std::getenv("VISION_AI_BOX_FOURCC");
+    if (configured_fourcc && std::strlen(configured_fourcc) == 4) {
+        return cv::VideoWriter::fourcc(
+            configured_fourcc[0],
+            configured_fourcc[1],
+            configured_fourcc[2],
+            configured_fourcc[3]
+        );
+    }
+
+    return cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+}
+
+bool try_open_writer(cv::VideoWriter& writer, const std::string& file_path, const cv::Size& frame_size)
+{
+    const int fourcc = resolve_fourcc();
+    const double fps = 30.0;
+
+    const char* gst_pipeline = std::getenv("VISION_AI_BOX_GSTREAMER_PIPELINE");
+    if (gst_pipeline && *gst_pipeline) {
+        if (writer.open(gst_pipeline, cv::CAP_GSTREAMER, fourcc, fps, frame_size, true)) {
+            return true;
+        }
+    }
+
+    if (writer.open(file_path, fourcc, fps, frame_size, true)) {
+        return true;
+    }
+
+    return false;
+}
 } // namespace
 
 BaseSystem::BaseSystem(Logger& logger, SelectedCamera& camera)
     : logger_(logger), camera_(camera)
 {
+    camera_.register_frame_callback([this](const core::FrameContext& frame) {
+        on_frame_received(frame);
+    });
 }
 
 BaseSystem::~BaseSystem()
@@ -54,24 +94,16 @@ bool BaseSystem::start_recording()
     }
 
     recording_active_.store(true, std::memory_order_release);
-    recording_thread_ = std::thread(&BaseSystem::recording_loop, this);
+    last_written_sequence_.store(0, std::memory_order_release);
+    logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Recording callback enabled for: " + current_recording_file_);
     return true;
 }
 
 bool BaseSystem::stop_recording()
 {
     recording_active_.store(false, std::memory_order_release);
-
-    if (recording_thread_.joinable()) {
-        logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Stopping recording thread for: " + current_recording_file_);
-        recording_thread_.join();
-    }
-
-    std::lock_guard lock(writer_mutex_);
-    if (writer_.isOpened()) {
-        logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Releasing video writer for: " + current_recording_file_);
-        writer_.release();
-    }
+    close_writer();
+    logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Recording stopped for: " + current_recording_file_);
     return true;
 }
 
@@ -92,19 +124,49 @@ bool BaseSystem::capture_frame()
     }
 
     core::FrameContext frame;
-    if (!camera_.latest_frame(frame) || frame.color.empty()) {
+    if (!camera_.latest_frame(frame) || !frame.color || frame.color->empty()) {
         logger_.log(LogLevel::WARN, "BASE_SYSTEM", "Snapshot capture failed: no valid frame available");
         return false;
     }
 
+    const std::shared_ptr<cv::Mat> frame_copy = frame.color;
     const std::string capture_path = "media/image/record_" + make_recording_stamp() + ".jpeg";
-    const bool ok = cv::imwrite(capture_path, frame.color);
-    if (ok) {
-        logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Snapshot saved: " + capture_path);
-    } else {
-        logger_.log(LogLevel::ERROR, "BASE_SYSTEM", "Snapshot write failed: " + capture_path);
+
+    std::thread([this, frame_copy, capture_path]() mutable {
+        try {
+            const bool ok = cv::imwrite(capture_path, *frame_copy);
+            if (ok) {
+                logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Snapshot saved: " + capture_path);
+            } else {
+                logger_.log(LogLevel::ERROR, "BASE_SYSTEM", "Snapshot write failed: " + capture_path);
+            }
+        } catch (const std::exception& ex) {
+            logger_.log(LogLevel::ERROR, "BASE_SYSTEM", "Snapshot worker failed: " + std::string(ex.what()));
+        }
+    }).detach();
+
+    return true;
+}
+
+void BaseSystem::on_frame_received(const core::FrameContext& frame)
+{
+    if (!recording_active_.load(std::memory_order_acquire) || !frame.color || frame.color->empty()) {
+        return;
     }
-    return ok;
+
+    const std::uint64_t sequence = frame.sequence;
+    if (sequence != 0 && sequence <= last_written_sequence_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::lock_guard lock(writer_mutex_);
+    open_writer_if_needed(*frame.color);
+    if (!writer_.isOpened()) {
+        return;
+    }
+
+    writer_.write(*frame.color);
+    last_written_sequence_.store(sequence, std::memory_order_release);
 }
 
 bool BaseSystem::is_recording() const noexcept
@@ -118,31 +180,23 @@ std::string BaseSystem::current_recording_file() const
     return current_recording_file_;
 }
 
-void BaseSystem::recording_loop()
+void BaseSystem::open_writer_if_needed(const cv::Mat& frame)
 {
-    while (recording_active_.load(std::memory_order_acquire)) {
-        core::FrameContext frame;
-        if (!camera_.latest_frame(frame) || frame.color.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(25));
-            continue;
-        }
-
-        std::lock_guard lock(writer_mutex_);
-        if (!writer_.isOpened()) {
-            const cv::Size frame_size = frame.color.size();
-            const int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
-            writer_.open(current_recording_file_, fourcc, 30.0, frame_size, true);
-            if (!writer_.isOpened()) {
-                recording_active_.store(false, std::memory_order_release);
-                logger_.log(LogLevel::ERROR, "BASE_SYSTEM", "Unable to open video writer for: " + current_recording_file_);
-                break;
-            }
-            logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Video writer opened: " + current_recording_file_);
-        }
-
-        writer_.write(frame.color);
+    if (writer_.isOpened()) {
+        return;
     }
 
+    if (!try_open_writer(writer_, current_recording_file_, frame.size())) {
+        recording_active_.store(false, std::memory_order_release);
+        logger_.log(LogLevel::ERROR, "BASE_SYSTEM", "Unable to open video writer for: " + current_recording_file_);
+        return;
+    }
+
+    logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Video writer opened: " + current_recording_file_);
+}
+
+void BaseSystem::close_writer()
+{
     std::lock_guard lock(writer_mutex_);
     if (writer_.isOpened()) {
         logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Closing video writer: " + current_recording_file_);
