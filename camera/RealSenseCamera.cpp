@@ -159,17 +159,25 @@ bool RealSenseCamera::is_running() const noexcept { return running_; }
 
 bool RealSenseCamera::check_device_state() const noexcept
 {
-    if (!initialized_ || serial_number_.empty()) return false;
-
     try {
         const auto devices = ctx_.query_devices();
-        for (const auto& device : devices) {
-            const std::string device_serial = device.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
-            if (device_serial == serial_number_) {
-                return true;
-            }
+        if (devices.size() == 0) {
+            return false;
         }
-        return false;
+
+        // ကင်မရာ initialize ဖြစ်ပြီးပါက ၎င်း၏ serial number နှင့် ကိုက်ညီသော device ရှိမရှိ စစ်ဆေးရန်
+        if (!serial_number_.empty()) {
+            for (const auto& device : devices) {
+                const std::string device_serial = device.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
+                if (device_serial == serial_number_) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // initialize မဖြစ်သေးပါက RealSense device တစ်ခုခု ရှိနေလျှင် true ပြန်ပေးရန်
+        return true;
     } catch (const rs2::error&) {
         return false;
     } catch (const std::exception&) {

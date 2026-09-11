@@ -82,35 +82,46 @@ async function fetchSessionLogs() {
 // Refresh Camera Feed & Toggle Status
 async function refreshStatus() {
   const status = await request('/api/camera/status');
-  const isConnected = status.running === true;
-  const statusLabel = status.status || (isConnected ? 'connected' : 'disconnected');
+  const enabled = Boolean(status.enabled);
+  const connected = Boolean(status.connected);
+  const running = Boolean(status.running);
+  const error = Boolean(status.error);
 
-  cameraToggle.checked = isConnected;
+  cameraToggle.checked = enabled;
 
-  if (isConnected) {
+  if (running) {
     cameraStatus.textContent = 'Running';
     cameraStatus.classList.add('active');
-  } else if (statusLabel === 'error') {
-    cameraStatus.textContent = 'Error';
+  } else if (!enabled) {
+    cameraStatus.textContent = 'Stopped';
+    cameraStatus.classList.remove('active');
+  } else if (!connected || error) {
+    cameraStatus.textContent = 'Unplugged';
     cameraStatus.classList.remove('active');
   } else {
-    cameraStatus.textContent = 'Disconnected';
+    cameraStatus.textContent = 'Waiting';
     cameraStatus.classList.remove('active');
   }
 
   if (noCameraOverlay) {
     const noCameraMessage = noCameraOverlay.querySelector('.camera-no-feed-text');
-    noCameraOverlay.hidden = isConnected;
-    if (noCameraMessage) {
-      noCameraMessage.textContent = statusLabel === 'error' ? 'Camera error: reconnecting…' : 'Camera disconnected';
+    if (!enabled) {
+      noCameraOverlay.hidden = false;
+      if (noCameraMessage) noCameraMessage.textContent = 'Open Your Camera';
+    } else if (enabled && (!connected || error)) {
+      noCameraOverlay.hidden = false;
+      if (noCameraMessage) noCameraMessage.textContent = 'Camera Unplugged';
+    } else {
+      noCameraOverlay.hidden = true;
+      if (noCameraMessage) noCameraMessage.textContent = '';
     }
   }
 
-  stream.hidden = !isConnected;
-  if (isConnected && !streamActive) {
+  stream.hidden = !(enabled && connected && running);
+  if (enabled && connected && running && !streamActive) {
     stream.src = '/api/camera/stream?generation=' + Date.now();
     streamActive = true;
-  } else if (!isConnected && streamActive) {
+  } else if (!enabled || !connected || !running) {
     stream.removeAttribute('src');
     streamActive = false;
   }

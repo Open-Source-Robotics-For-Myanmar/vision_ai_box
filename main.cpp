@@ -31,45 +31,59 @@ void handle_signal(int)
 
 void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
 {
-    bool last_connected = false;
-
     while (toggles.running.load(std::memory_order_acquire)) {
+        const bool enabled = toggles.camera_enabled.load(std::memory_order_acquire);
         const bool connected = camera.check_device_state();
         const bool running = camera.is_running();
 
+        if (!enabled) {
+            if (running) {
+                logger.log(LogLevel::INFO, "CAMERA", "Camera turned off");
+                camera.stop();
+            }
+            toggles.camera_error = false;
+            toggles.processing_enabled = false;
+            camera.set_processing_enabled(false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            continue;
+        }
+
         if (running && !connected) {
-            logger.log(LogLevel::WARN, "CAMERA", "Hot unplug detected: USB device disconnected");
+            logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
             camera.stop();
             toggles.camera_error = true;
-            toggles.camera_enabled = false;
             toggles.processing_enabled = false;
-            last_connected = false;
-        } else if (!running && connected) {
+            camera.set_processing_enabled(false);
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        if (!running && connected) {
             toggles.camera_error = false;
             if (camera.start()) {
-                toggles.camera_enabled = true;
                 toggles.processing_enabled = true;
                 camera.set_processing_enabled(true);
-                if (!last_connected) {
-                    logger.log(LogLevel::INFO, "CAMERA", "Hot plug detected: USB device connected and started");
-                    last_connected = true;
-                }
+                logger.log(LogLevel::INFO, "CAMERA", "Camera Connected");
             } else {
-                logger.log(LogLevel::WARN, "CAMERA", "USB device found but start failed; retrying in 2 seconds");
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-                continue;
-            }
-        } else if (!connected) {
-            toggles.camera_error = true;
-            if (!last_connected) {
-                logger.log(LogLevel::WARN, "CAMERA", "USB device unavailable; waiting for hot plug");
-                last_connected = false;
+                toggles.camera_error = true;
+                toggles.processing_enabled = false;
+                camera.set_processing_enabled(false);
+                logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
             }
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        if (!connected) {
+            toggles.camera_error = true;
+            toggles.processing_enabled = false;
+            camera.set_processing_enabled(false);
+            logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 }
 }
@@ -77,6 +91,7 @@ void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggle
 int main()
 {
     ServiceToggles toggles;
+    toggles.camera_enabled = true;
     Logger logger;
     active_toggles = &toggles;
     std::signal(SIGINT, handle_signal);
@@ -118,6 +133,25 @@ int main()
     }
 
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box is ready at http://<device-ip>:" + std::to_string(web_port));
+
+    if (camera.check_device_state()) {
+        if (camera.start()) {
+            toggles.camera_error = false;
+            toggles.processing_enabled = true;
+            camera.set_processing_enabled(true);
+            logger.log(LogLevel::INFO, "CAMERA", "Camera Connected");
+        } else {
+            toggles.camera_error = true;
+            toggles.processing_enabled = false;
+            camera.set_processing_enabled(false);
+            logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
+        }
+    } else {
+        toggles.camera_error = true;
+        toggles.processing_enabled = false;
+        camera.set_processing_enabled(false);
+        logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
+    }
 
     std::thread camera_monitor_thread(camera_reconnect_loop, std::ref(logger), std::ref(camera), std::ref(toggles));
 

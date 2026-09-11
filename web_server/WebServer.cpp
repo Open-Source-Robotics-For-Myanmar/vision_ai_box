@@ -303,23 +303,36 @@ bool WebServer::is_authenticated(const std::string& request) const
 bool WebServer::start_camera()
 {
     std::lock_guard lock(camera_control_mutex_);
+    toggles_.camera_enabled = true;
+
     if (camera_.is_running()) {
         toggles_.camera_error = false;
-        toggles_.camera_enabled = true;
         toggles_.processing_enabled = true;
         camera_.set_processing_enabled(true);
+        logger_.log(LogLevel::INFO, "CAMERA", "Camera Connected");
         return true;
     }
-    if (!camera_.start()) {
+
+    if (!camera_.check_device_state()) {
         toggles_.camera_error = true;
-        toggles_.camera_enabled = false;
         toggles_.processing_enabled = false;
+        camera_.set_processing_enabled(false);
+        logger_.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
         return false;
     }
+
+    if (!camera_.start()) {
+        toggles_.camera_error = true;
+        toggles_.processing_enabled = false;
+        camera_.set_processing_enabled(false);
+        logger_.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
+        return false;
+    }
+
     toggles_.camera_error = false;
-    toggles_.camera_enabled = true;
     toggles_.processing_enabled = true;
     camera_.set_processing_enabled(true);
+    logger_.log(LogLevel::INFO, "CAMERA", "Camera Connected");
     return true;
 }
 
@@ -327,17 +340,16 @@ void WebServer::stop_camera()
 {
     std::lock_guard lock(camera_control_mutex_);
     stream_generation_.fetch_add(1, std::memory_order_release);
-    if (!camera_.is_running()) {
-        toggles_.camera_enabled = false;
-        toggles_.processing_enabled = false;
-        toggles_.camera_error = false;
-        return;
-    }
-    camera_.set_processing_enabled(false);
-    camera_.stop();
     toggles_.camera_enabled = false;
     toggles_.processing_enabled = false;
     toggles_.camera_error = false;
+
+    if (camera_.is_running()) {
+        camera_.set_processing_enabled(false);
+        camera_.stop();
+    }
+
+    logger_.log(LogLevel::INFO, "CAMERA", "Camera turned off");
 }
 
 CameraSettings WebServer::camera_settings() const
@@ -531,12 +543,16 @@ void WebServer::handle_client(int client_socket)
             send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
         }
     } else if (method == "GET" && path == "/api/camera/status") {
+        const bool enabled = toggles_.camera_enabled.load(std::memory_order_acquire);
+        const bool connected = camera_.check_device_state();
         const bool running = camera_.is_running();
-        const std::string status = running ? "connected" : (toggles_.camera_error.load() ? "error" : "disconnected");
+        const bool error = toggles_.camera_error.load(std::memory_order_acquire);
+
         send_all(client_socket, http_response(200, "application/json", json_response({
-            {"status", status},
+            {"enabled", enabled},
+            {"connected", connected},
             {"running", running},
-            {"processing", toggles_.processing_enabled.load()}
+            {"error", error}
         })));
     } else if (method == "POST" && path == "/api/camera/start") {
         const bool started = start_camera();
