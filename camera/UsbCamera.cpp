@@ -3,7 +3,19 @@
 #include "Logger.hpp"
 
 #include <chrono>
+#include <filesystem>
 #include <string>
+
+namespace
+{
+bool device_exists_for_index(int device_index)
+{
+    if (device_index < 0) {
+        return false;
+    }
+    return std::filesystem::exists("/dev/video" + std::to_string(device_index));
+}
+}
 
 UsbCamera::UsbCamera(Logger& logger, CameraSettings settings)
     : logger_(logger), settings_(std::move(settings)) {}
@@ -51,17 +63,9 @@ bool UsbCamera::open_device()
         capture_.release();
     }
 
-    constexpr int candidate_indices[] = {1, 2, 3, 0, 4, 5, 6, 7};
-    int selected_device = -1;
-    for (const int device_index : candidate_indices) {
-        if (capture_.open(device_index, cv::CAP_V4L2)) {
-            selected_device = device_index;
-            break;
-        }
-        capture_.release();
-    }
-    if (selected_device < 0) {
-        logger_.log(LogLevel::ERROR, "CAMERA", "Unable to open any USB camera device from /dev/video0 through /dev/video7");
+    const int selected_device = USB_CAMERA_DEVICE_INDEX;
+    if (!capture_.open(selected_device, cv::CAP_V4L2)) {
+        logger_.log(LogLevel::ERROR, "CAMERA", "Unable to open USB camera device index " + std::to_string(selected_device));
         return false;
     }
     logger_.log(LogLevel::INFO, "CAMERA", "Opened USB camera device index " + std::to_string(selected_device));
@@ -87,24 +91,26 @@ bool UsbCamera::verify_frame()
 
 bool UsbCamera::start()
 {
+    std::lock_guard lock(lifecycle_mutex_);
     if (running_) return true;
     if (!initialize()) return false;
-    return start_worker();
-}
-
-bool UsbCamera::start_worker()
-{
     running_ = true;
     worker_ = std::thread(&UsbCamera::acquisition_loop, this);
     return true;
 }
 
+bool UsbCamera::start_worker()
+{
+    return true;
+}
+
 void UsbCamera::stop() noexcept
 {
+    std::lock_guard lock(lifecycle_mutex_);
     running_ = false;
     if (worker_.joinable()) worker_.join();
 
-    std::lock_guard lock(capture_mutex_);
+    std::lock_guard capture_lock(capture_mutex_);
     capture_.release();
     initialized_ = false;
 }
@@ -135,6 +141,16 @@ bool UsbCamera::latest_frame(FrameContext& frame)
 
 bool UsbCamera::is_running() const noexcept { return running_; }
 
+bool UsbCamera::check_device_state() const noexcept
+{
+    const int preferred = settings_.usb_device_index;
+    if (preferred >= 0) {
+        return device_exists_for_index(preferred);
+    }
+
+    return device_exists_for_index(USB_CAMERA_DEVICE_INDEX);
+}
+
 void UsbCamera::acquisition_loop()
 {
     std::uint64_t sequence = 0;
@@ -150,11 +166,13 @@ void UsbCamera::acquisition_loop()
             if (!capture_.read(frame) || frame.empty()) {
                 const auto now = std::chrono::steady_clock::now();
                 if (now - last_read_warning_ >= std::chrono::seconds(1)) {
-                    logger_.log(LogLevel::WARN, "CAMERA", "USB camera frame read failed");
+                    logger_.log(LogLevel::WARN, "CAMERA", "Hot unplug detected: camera disconnected");
                     last_read_warning_ = now;
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                continue;
+                running_ = false;
+                capture_.release();
+                initialized_ = false;
+                break;
             }
         }
 

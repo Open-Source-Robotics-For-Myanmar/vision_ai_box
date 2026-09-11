@@ -1,6 +1,7 @@
 #include "RealSenseCamera.hpp"
 #include "Logger.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <utility>
@@ -50,12 +51,13 @@ bool RealSenseCamera::initialize()
         }
 
         const rs2::device opened_device = profile.get_device();
+        serial_number_ = opened_device.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
         configure_sensor_defaults(opened_device);
 
         logger_.log(LogLevel::INFO, "CAMERA",
             std::string("Opened RealSense device: ") +
             opened_device.get_info(RS2_CAMERA_INFO_NAME) + " (serial " +
-            opened_device.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER) + ")");
+            serial_number_ + ")");
 
         initialized_ = true;
         processing_enabled_ = true;
@@ -98,11 +100,14 @@ void RealSenseCamera::configure_alignment()
 
 void RealSenseCamera::apply_sensor_defaults(rs2::sensor& sensor)
 {
-    if (settings_.auto_exposure && sensor.supports(RS2_OPTION_ENABLE_AUTO_EXPOSURE)) {
-        sensor.set_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE, settings_.auto_exposure_val);
+    if (sensor.supports(RS2_OPTION_ENABLE_AUTO_EXPOSURE)) {
+        const float exposure_auto = settings_.auto_exposure ? 1.0f : 0.0f;
+        sensor.set_option(RS2_OPTION_ENABLE_AUTO_EXPOSURE, exposure_auto);
     }
-    if (settings_.auto_white_balance && sensor.supports(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE)) {
-        sensor.set_option(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE, settings_.auto_white_balance_val);
+
+    if (sensor.supports(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE)) {
+        const float white_balance_auto = settings_.auto_white_balance ? 1.0f : 0.0f;
+        sensor.set_option(RS2_OPTION_ENABLE_AUTO_WHITE_BALANCE, white_balance_auto);
     }
 }
 
@@ -116,25 +121,27 @@ void RealSenseCamera::configure_sensor_defaults(const rs2::device& device)
 
 bool RealSenseCamera::start()
 {
+    std::lock_guard lock(lifecycle_mutex_);
     if (running_) return true;
     if (!initialize()) return false;
     processing_enabled_ = true;
-    return start_worker();
-}
-
-bool RealSenseCamera::start_worker()
-{
     running_ = true;
     worker_ = std::thread(&RealSenseCamera::acquisition_loop, this);
     return true;
 }
 
+bool RealSenseCamera::start_worker()
+{
+    return true;
+}
+
 void RealSenseCamera::stop() noexcept
 {
+    std::lock_guard lock(lifecycle_mutex_);
     running_ = false;
     if (worker_.joinable()) worker_.join();
 
-    std::lock_guard lock(pipeline_mutex_);
+    std::lock_guard pipeline_lock(pipeline_mutex_);
     if (initialized_) {
         try {
             pipeline_.stop();
@@ -149,6 +156,26 @@ void RealSenseCamera::stop() noexcept
 void RealSenseCamera::set_processing_enabled(bool enabled) noexcept { processing_enabled_ = enabled; }
 
 bool RealSenseCamera::is_running() const noexcept { return running_; }
+
+bool RealSenseCamera::check_device_state() const noexcept
+{
+    if (!initialized_ || serial_number_.empty()) return false;
+
+    try {
+        const auto devices = ctx_.query_devices();
+        for (const auto& device : devices) {
+            const std::string device_serial = device.get_info(RS2_CAMERA_INFO_SERIAL_NUMBER);
+            if (device_serial == serial_number_) {
+                return true;
+            }
+        }
+        return false;
+    } catch (const rs2::error&) {
+        return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
 
 bool RealSenseCamera::latest_frame(FrameContext& frame)
 {
@@ -235,10 +262,10 @@ void RealSenseCamera::acquisition_loop()
                 }
             }
         } catch (const rs2::error& error) {
-            logger_.log(LogLevel::WARN, "CAMERA", std::string("RealSense frame read failed: ") + error.what());
+            logger_.log(LogLevel::WARN, "CAMERA", "Hot unplug detected: camera disconnected");
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         } catch (const std::exception& error) {
-            logger_.log(LogLevel::WARN, "CAMERA", std::string("RealSense frame processing exception: ") + error.what());
+            logger_.log(LogLevel::WARN, "CAMERA", "Hot unplug detected: camera disconnected");
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }

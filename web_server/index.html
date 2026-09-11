@@ -48,6 +48,36 @@
     .video-card { background: var(--panel-bg); border: 1px solid var(--panel-border); position: relative; }
     .video-viewport { width: 100%; height: 480px; background: #000; position: relative; display: flex; justify-content: center; align-items: center; overflow: hidden; }
     #stream { width: 100%; height: 100%; object-fit: contain; }
+    .camera-no-feed {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      z-index: 9;
+      background: linear-gradient(135deg, rgba(18,18,18,0.9), rgba(32,32,32,0.8));
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .camera-no-feed-inner {
+      display: grid;
+      gap: 8px;
+      padding: 18px 24px;
+      border-radius: 10px;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .camera-no-feed-title {
+      color: #ffb300;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .camera-no-feed-text {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
     
     /* Dynamic Green Date Time Overlay */
     .camera-info-overlay { position: absolute; top: 12px; left: 14px; font-family: monospace; font-size: 16px; font-weight: bold; text-shadow: 1px 1px 3px #000; color: #00ff00; z-index: 10; }
@@ -88,12 +118,37 @@
       font-size: 11px;
       line-height: 1.35;
       flex: 1;
+      width: 100%;
+      min-height: 420px;
+      max-height: 500px;
       overflow-y: auto;
+      overflow-x: auto;
       padding: 8px;
       border: 1px solid #2a2a2a;
       white-space: pre-wrap;
       word-break: break-all;
       border-radius: 3px;
+      scrollbar-width: thin;
+      scrollbar-color: #4a4a4a #111;
+    }
+
+    #log-terminal::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+
+    #log-terminal::-webkit-scrollbar-track {
+      background: #111;
+      border-radius: 6px;
+    }
+
+    #log-terminal::-webkit-scrollbar-thumb {
+      background: #4a4a4a;
+      border-radius: 6px;
+    }
+
+    #log-terminal::-webkit-scrollbar-thumb:hover {
+      background: #666;
     }
 
     /* Right Panel: Snapshots & Controls */
@@ -165,6 +220,12 @@
           <div class="video-card">
             <div class="video-viewport">
               <div id="live-datetime" class="camera-info-overlay">--/--/---- --:--:--</div>
+              <div id="camera-no-feed" class="camera-no-feed" aria-live="polite">
+                <div class="camera-no-feed-inner">
+                  <div class="camera-no-feed-title">No Camera</div>
+                  <div class="camera-no-feed-text">Connected</div>
+                </div>
+              </div>
               <img id="stream" alt="Live camera stream" hidden>
             </div>
 
@@ -225,11 +286,6 @@
             </table>
           </div>
 
-          <!-- System Console Logs Terminal Panel (Fills Remaining Space) -->
-          <div class="log-panel">
-            <div class="panel-title">System Console Logs</div>
-            <div id="log-terminal">Loading session logs...</div>
-          </div>
         </div>
 
         <!-- Right Column: Results & Hardware Settings -->
@@ -303,16 +359,12 @@
         <div class="panel-title">Camera Settings</div>
         <form id="camera-settings-form" style="display: grid; gap: 12px; margin-top: 12px;">
           <div class="control-group" style="grid-template-columns: 140px 1fr;">
-            <label for="color_width">Color Width</label>
-            <input id="color_width" name="color_width" type="number" min="160" max="3840" step="1">
-          </div>
-          <div class="control-group" style="grid-template-columns: 140px 1fr;">
-            <label for="color_height">Color Height</label>
-            <input id="color_height" name="color_height" type="number" min="120" max="2160" step="1">
+            <label for="color_resolution">Color Resolution</label>
+            <select id="color_resolution" name="color_resolution"></select>
           </div>
           <div class="control-group" style="grid-template-columns: 140px 1fr;">
             <label for="color_fps">Color FPS</label>
-            <input id="color_fps" name="color_fps" type="number" min="1" max="120" step="1">
+            <select id="color_fps" name="color_fps"></select>
           </div>
           <div class="control-group" style="grid-template-columns: 140px 1fr;">
             <label for="auto_exposure">Auto Exposure</label>
@@ -328,6 +380,16 @@
               <option value="false">Disabled</option>
             </select>
           </div>
+          <div id="depth-settings" hidden>
+            <div class="control-group" style="grid-template-columns: 140px 1fr;">
+              <label for="depth_resolution">Depth Resolution</label>
+              <select id="depth_resolution" name="depth_resolution"></select>
+            </div>
+            <div class="control-group" style="grid-template-columns: 140px 1fr;">
+              <label for="depth_fps">Depth FPS</label>
+              <select id="depth_fps" name="depth_fps"></select>
+            </div>
+          </div>
           <div class="control-group" id="usb-device-field" style="grid-template-columns: 140px 1fr; display: none;">
             <label for="usb_device_index">Device Index</label>
             <input id="usb_device_index" name="usb_device_index" type="number" min="-1" max="15" step="1">
@@ -337,6 +399,13 @@
             <button type="submit" class="btn">Apply Settings</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <div id="view-system" hidden>
+      <div class="panel-box" style="max-width: 1100px; margin: 24px auto; min-height: 520px; display: flex; flex-direction: column;">
+        <div class="panel-title">System Console Logs</div>
+        <div id="log-terminal" style="height: 500px; width: 100%;">Loading session logs...</div>
       </div>
     </div>
   </main>

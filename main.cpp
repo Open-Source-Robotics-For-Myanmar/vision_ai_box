@@ -21,7 +21,56 @@ ServiceToggles* active_toggles = nullptr;
 
 void handle_signal(int)
 {
-    if (active_toggles) active_toggles->running = false;
+    if (active_toggles) {
+        active_toggles->running = false;
+        active_toggles->camera_enabled = false;
+        active_toggles->processing_enabled = false;
+        active_toggles->camera_error = false;
+    }
+}
+
+void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
+{
+    bool last_connected = false;
+
+    while (toggles.running.load(std::memory_order_acquire)) {
+        const bool connected = camera.check_device_state();
+        const bool running = camera.is_running();
+
+        if (running && !connected) {
+            logger.log(LogLevel::WARN, "CAMERA", "Hot unplug detected: USB device disconnected");
+            camera.stop();
+            toggles.camera_error = true;
+            toggles.camera_enabled = false;
+            toggles.processing_enabled = false;
+            last_connected = false;
+        } else if (!running && connected) {
+            toggles.camera_error = false;
+            if (camera.start()) {
+                toggles.camera_enabled = true;
+                toggles.processing_enabled = true;
+                camera.set_processing_enabled(true);
+                if (!last_connected) {
+                    logger.log(LogLevel::INFO, "CAMERA", "Hot plug detected: USB device connected and started");
+                    last_connected = true;
+                }
+            } else {
+                logger.log(LogLevel::WARN, "CAMERA", "USB device found but start failed; retrying in 2 seconds");
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                continue;
+            }
+        } else if (!connected) {
+            toggles.camera_error = true;
+            if (!last_connected) {
+                logger.log(LogLevel::WARN, "CAMERA", "USB device unavailable; waiting for hot plug");
+                last_connected = false;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    }
 }
 }
 
@@ -42,31 +91,14 @@ int main()
 
 #ifdef CAMERA_USB
     UsbCamera camera(logger, settings);
-
 #elif defined(CAMERA_REALSENSE)
     RealSenseCamera camera(logger, settings);
-
 #else
-
     logger.log(LogLevel::ERROR, "SYSTEM", "No camera backend was selected");
     return 1;
-
 #endif
 
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box starting up");
-
-    if (!camera.start()) {
-        logger.log(
-            LogLevel::ERROR,
-            "CAMERA",
-            "Camera initialization failed"
-        );
-
-        return 1;
-    }
-
-    toggles.processing_enabled = true;
-    camera.set_processing_enabled(true);
 
     std::uint16_t web_port = 8080;
     if (const char* configured_port = std::getenv("VISION_AI_BOX_PORT")) {
@@ -86,13 +118,22 @@ int main()
     }
 
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box is ready at http://<device-ip>:" + std::to_string(web_port));
+
+    std::thread camera_monitor_thread(camera_reconnect_loop, std::ref(logger), std::ref(camera), std::ref(toggles));
+
     while (toggles.running.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
+    toggles.camera_enabled = false;
+    toggles.processing_enabled = false;
+    toggles.running = false;
+    toggles.camera_error = false;
+
     web_server.stop();
     camera.set_processing_enabled(false);
     camera.stop();
+    if (camera_monitor_thread.joinable()) camera_monitor_thread.join();
     active_toggles = nullptr;
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box stopped cleanly");
 

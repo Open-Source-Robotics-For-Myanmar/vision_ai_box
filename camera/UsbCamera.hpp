@@ -12,6 +12,8 @@
 #include <thread>
 #include <vector>
 
+inline constexpr int USB_CAMERA_DEVICE_INDEX = 0;
+
 class Logger;
 
 class UsbCamera final
@@ -29,6 +31,7 @@ public:
     void register_frame_callback(std::function<void(const FrameContext&)> callback);
     bool latest_frame(FrameContext& frame);
     bool is_running() const noexcept;
+    bool check_device_state() const noexcept;
 
 private:
     bool initialize();
@@ -42,6 +45,7 @@ private:
     CameraSettings settings_;
     cv::VideoCapture capture_;
     mutable std::mutex capture_mutex_;
+    std::mutex lifecycle_mutex_;
     std::mutex callbacks_mutex_;
     std::mutex latest_frame_mutex_;
     std::vector<std::function<void(const FrameContext&)>> frame_callbacks_;

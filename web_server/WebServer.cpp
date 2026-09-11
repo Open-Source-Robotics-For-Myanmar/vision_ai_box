@@ -21,6 +21,46 @@ namespace
 {
 using json = nlohmann::json;
 
+json serialize_resolution_options(const std::vector<ResolutionOption>& options)
+{
+    json payload = json::array();
+    for (const auto& option : options) {
+        payload.push_back({
+            {"width", option.width},
+            {"height", option.height},
+            {"label", option.label}
+        });
+    }
+    return payload;
+}
+
+json serialize_available_settings()
+{
+    json payload = {
+        {"color_resolutions", json::array()},
+        {"color_fps_options", json::array()}
+    };
+
+#ifdef CAMERA_USB
+    payload["color_resolutions"] = serialize_resolution_options(AvailableCameraSettings::color_resolutions());
+    for (const int fps : AvailableCameraSettings::color_fps_options()) {
+        payload["color_fps_options"].push_back(fps);
+    }
+#elif defined(CAMERA_REALSENSE)
+    payload["color_resolutions"] = serialize_resolution_options(AvailableCameraSettings::color_resolutions());
+    for (const int fps : AvailableCameraSettings::color_fps_options()) {
+        payload["color_fps_options"].push_back(fps);
+    }
+    payload["depth_resolutions"] = serialize_resolution_options(AvailableCameraSettings::depth_resolutions());
+    payload["depth_fps_options"] = json::array();
+    for (const int fps : AvailableCameraSettings::depth_fps_options()) {
+        payload["depth_fps_options"].push_back(fps);
+    }
+#endif
+
+    return payload;
+}
+
 json serialize_camera_settings(const CameraSettings& settings)
 {
     json payload = {
@@ -38,6 +78,38 @@ json serialize_camera_settings(const CameraSettings& settings)
     payload["depth_width"] = settings.depth_width;
     payload["depth_height"] = settings.depth_height;
     payload["depth_fps"] = settings.depth_fps;
+#endif
+
+    return payload;
+}
+
+json serialize_camera_settings_response(const CameraSettings& settings)
+{
+    json payload = {
+        {"camera_type",
+#ifdef CAMERA_REALSENSE
+            "realsense"
+#elif defined(CAMERA_USB)
+            "usb"
+#endif
+        },
+        {"settings", serialize_camera_settings(settings)},
+        {"available_settings", serialize_available_settings()}
+    };
+
+    const auto& active = payload["settings"];
+    payload["color_width"] = active.value("color_width", settings.color_width);
+    payload["color_height"] = active.value("color_height", settings.color_height);
+    payload["color_fps"] = active.value("color_fps", settings.color_fps);
+    payload["auto_exposure"] = active.value("auto_exposure", settings.auto_exposure);
+    payload["auto_white_balance"] = active.value("auto_white_balance", settings.auto_white_balance);
+#ifdef CAMERA_USB
+    payload["usb_device_index"] = active.value("usb_device_index", settings.usb_device_index);
+#elif defined(CAMERA_REALSENSE)
+    payload["depth_enabled"] = active.value("depth_enabled", settings.depth_enabled);
+    payload["depth_width"] = active.value("depth_width", settings.depth_width);
+    payload["depth_height"] = active.value("depth_height", settings.depth_height);
+    payload["depth_fps"] = active.value("depth_fps", settings.depth_fps);
 #endif
 
     return payload;
@@ -231,8 +303,20 @@ bool WebServer::is_authenticated(const std::string& request) const
 bool WebServer::start_camera()
 {
     std::lock_guard lock(camera_control_mutex_);
-    if (camera_.is_running()) return true;
-    if (!camera_.start()) return false;
+    if (camera_.is_running()) {
+        toggles_.camera_error = false;
+        toggles_.camera_enabled = true;
+        toggles_.processing_enabled = true;
+        camera_.set_processing_enabled(true);
+        return true;
+    }
+    if (!camera_.start()) {
+        toggles_.camera_error = true;
+        toggles_.camera_enabled = false;
+        toggles_.processing_enabled = false;
+        return false;
+    }
+    toggles_.camera_error = false;
     toggles_.camera_enabled = true;
     toggles_.processing_enabled = true;
     camera_.set_processing_enabled(true);
@@ -246,12 +330,14 @@ void WebServer::stop_camera()
     if (!camera_.is_running()) {
         toggles_.camera_enabled = false;
         toggles_.processing_enabled = false;
+        toggles_.camera_error = false;
         return;
     }
     camera_.set_processing_enabled(false);
     camera_.stop();
     toggles_.camera_enabled = false;
     toggles_.processing_enabled = false;
+    toggles_.camera_error = false;
 }
 
 CameraSettings WebServer::camera_settings() const
@@ -261,6 +347,15 @@ CameraSettings WebServer::camera_settings() const
 
 bool WebServer::apply_camera_settings(const CameraSettings& settings)
 {
+    const bool was_recording = base_system_.is_recording();
+    if (was_recording) {
+        base_system_.stop_recording();
+        {
+            std::lock_guard stream_lock(stream_mutex_);
+            latest_stream_frame_.reset();
+        }
+    }
+
     std::lock_guard lock(camera_control_mutex_);
     const bool was_running = camera_.is_running();
     if (was_running) {
@@ -269,8 +364,18 @@ bool WebServer::apply_camera_settings(const CameraSettings& settings)
     }
 
     const bool applied = camera_.apply_settings(settings);
-    if (applied && was_running) {
+    if (!applied) {
+        if (was_recording) {
+            base_system_.start_recording();
+        }
+        return false;
+    }
+
+    if (was_running || was_recording) {
         if (!camera_.start()) {
+            if (was_recording) {
+                base_system_.start_recording();
+            }
             return false;
         }
         toggles_.camera_enabled = true;
@@ -278,7 +383,11 @@ bool WebServer::apply_camera_settings(const CameraSettings& settings)
         camera_.set_processing_enabled(true);
         stream_generation_.fetch_add(1, std::memory_order_release);
     }
-    return applied;
+
+    if (was_recording) {
+        base_system_.start_recording();
+    }
+    return true;
 }
 
 void WebServer::handle_client(int client_socket)
@@ -387,7 +496,7 @@ void WebServer::handle_client(int client_socket)
             {"captured", captured}
         })));
     } else if (method == "GET" && path == "/api/camera/settings") {
-        send_all(client_socket, http_response(200, "application/json", serialize_camera_settings(camera_settings()).dump()));
+        send_all(client_socket, http_response(200, "application/json", serialize_camera_settings_response(camera_settings()).dump()));
     } else if (method == "POST" && path == "/api/camera/settings") {
         try {
             const json payload = json::parse(body);
@@ -408,14 +517,26 @@ void WebServer::handle_client(int client_socket)
             const bool applied = apply_camera_settings(settings);
             send_all(client_socket, http_response(applied ? 200 : 500, "application/json", json_response({
                 {"applied", applied},
-                {"settings", serialize_camera_settings(settings)}
+                {"camera_type",
+#ifdef CAMERA_REALSENSE
+                    "realsense"
+#elif defined(CAMERA_USB)
+                    "usb"
+#endif
+                },
+                {"settings", serialize_camera_settings(settings)},
+                {"available_settings", serialize_available_settings()}
             })));
         } catch (const std::exception&) {
             send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
         }
     } else if (method == "GET" && path == "/api/camera/status") {
+        const bool running = camera_.is_running();
+        const std::string status = running ? "connected" : (toggles_.camera_error.load() ? "error" : "disconnected");
         send_all(client_socket, http_response(200, "application/json", json_response({
-            {"running", camera_.is_running()}, {"processing", toggles_.processing_enabled.load()}
+            {"status", status},
+            {"running", running},
+            {"processing", toggles_.processing_enabled.load()}
         })));
     } else if (method == "POST" && path == "/api/camera/start") {
         const bool started = start_camera();

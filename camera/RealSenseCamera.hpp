@@ -30,6 +30,7 @@ public:
     void register_frame_callback(std::function<void(const FrameContext&)> callback);
     bool latest_frame(FrameContext& frame);
     bool is_running() const noexcept;
+    bool check_device_state() const noexcept;
 
 private:
     bool initialize();
@@ -43,10 +44,13 @@ private:
 
     Logger& logger_;
     CameraSettings settings_;
+    rs2::context ctx_;
     rs2::pipeline pipeline_;
     rs2::config config_;
+    std::string serial_number_;
     std::unique_ptr<rs2::align> align_to_color_;
     mutable std::mutex pipeline_mutex_;
+    std::mutex lifecycle_mutex_;
     std::mutex callbacks_mutex_;
     std::mutex latest_frame_mutex_;
     std::vector<std::function<void(const FrameContext&)>> frame_callbacks_;

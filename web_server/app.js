@@ -8,6 +8,7 @@ const cameraToggle = document.querySelector('#camera-toggle');
 const cameraStatus = document.querySelector('#camera-status');
 const stream = document.querySelector('#stream');
 const liveDatetime = document.querySelector('#live-datetime');
+const noCameraOverlay = document.querySelector('#camera-no-feed');
 const logTerminal = document.querySelector('#log-terminal');
 const recordToggleBtn = document.querySelector('#record-toggle-btn');
 const restartRecordBtn = document.querySelector('#restart-record-btn');
@@ -17,6 +18,7 @@ const recordStatusText = document.querySelector('#record-status-text');
 const cameraSettingsForm = document.querySelector('#camera-settings-form');
 const cancelSettingsBtn = document.querySelector('#cancel-settings-btn');
 const usbDeviceField = document.querySelector('#usb-device-field');
+const viewSystem = document.querySelector('#view-system');
 const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
 
 let toggleRequestActive = false;
@@ -62,34 +64,53 @@ async function fetchSessionLogs() {
   try {
     const logs = await request('/api/logs');
     if (Array.isArray(logs) && logs.length > 0) {
+      const shouldScrollToBottom = logTerminal.scrollHeight - logTerminal.clientHeight <= logTerminal.scrollTop + 24;
       logTerminal.textContent = logs.join('\n');
-      logTerminal.scrollTop = logTerminal.scrollHeight;
+      if (shouldScrollToBottom || logTerminal.scrollTop === 0) {
+        logTerminal.scrollTop = logTerminal.scrollHeight;
+      }
     } else {
       logTerminal.textContent = 'No logs recorded for this session.';
+      logTerminal.scrollTop = 0;
     }
   } catch (err) {
     logTerminal.textContent = 'Failed to fetch session logs...';
+    logTerminal.scrollTop = 0;
   }
 }
 
 // Refresh Camera Feed & Toggle Status
 async function refreshStatus() {
   const status = await request('/api/camera/status');
-  cameraToggle.checked = status.running;
+  const isConnected = status.running === true;
+  const statusLabel = status.status || (isConnected ? 'connected' : 'disconnected');
 
-  if (status.running) {
+  cameraToggle.checked = isConnected;
+
+  if (isConnected) {
     cameraStatus.textContent = 'Running';
     cameraStatus.classList.add('active');
+  } else if (statusLabel === 'error') {
+    cameraStatus.textContent = 'Error';
+    cameraStatus.classList.remove('active');
   } else {
-    cameraStatus.textContent = 'Stopped';
+    cameraStatus.textContent = 'Disconnected';
     cameraStatus.classList.remove('active');
   }
 
-  stream.hidden = !status.running;
-  if (status.running && !streamActive) {
+  if (noCameraOverlay) {
+    const noCameraMessage = noCameraOverlay.querySelector('.camera-no-feed-text');
+    noCameraOverlay.hidden = isConnected;
+    if (noCameraMessage) {
+      noCameraMessage.textContent = statusLabel === 'error' ? 'Camera error: reconnecting…' : 'Camera disconnected';
+    }
+  }
+
+  stream.hidden = !isConnected;
+  if (isConnected && !streamActive) {
     stream.src = '/api/camera/stream?generation=' + Date.now();
     streamActive = true;
-  } else if (!status.running && streamActive) {
+  } else if (!isConnected && streamActive) {
     stream.removeAttribute('src');
     streamActive = false;
   }
@@ -109,30 +130,105 @@ async function refreshStatus() {
 
 function showView(viewName) {
   const isVideo = viewName === 'video';
+  const isOptions = viewName === 'options';
+  const isSystem = viewName === 'system';
+
   viewVideo.hidden = !isVideo;
-  viewOptions.hidden = isVideo;
+  viewOptions.hidden = !isOptions;
+  if (viewSystem) viewSystem.hidden = !isSystem;
 
   navTabs.forEach(tab => {
-    const active = tab.textContent.trim() === (isVideo ? 'Video' : 'Options');
+    const label = tab.textContent.trim();
+    const active = label === (isVideo ? 'Video' : isOptions ? 'Options' : isSystem ? 'System' : 'Video');
     tab.classList.toggle('active', active);
   });
 
-  if (!isVideo && !viewOptions.dataset.loaded) {
+  if (isOptions && !viewOptions.dataset.loaded) {
     loadCameraSettings().catch(() => {
       console.error('Unable to load camera settings');
     });
   }
 }
 
+function resolveOptionValue(option) {
+  if (typeof option === 'string' || typeof option === 'number') {
+    return String(option);
+  }
+
+  if (option && typeof option === 'object') {
+    if (typeof option.label === 'string' && option.label.trim()) {
+      return option.label;
+    }
+    if (Number.isFinite(option.width) && Number.isFinite(option.height)) {
+      return `${option.width}x${option.height}`;
+    }
+  }
+
+  return '';
+}
+
+function populateSelect(selectElement, options, value) {
+  if (!selectElement) return;
+
+  selectElement.innerHTML = '';
+  const normalizedOptions = Array.isArray(options) ? options : [];
+
+  normalizedOptions.forEach(option => {
+    const optionValue = resolveOptionValue(option);
+    if (!optionValue) return;
+
+    const optionElement = document.createElement('option');
+    optionElement.value = optionValue;
+    optionElement.textContent = optionValue;
+
+    if (value !== undefined && optionValue === String(value)) {
+      optionElement.selected = true;
+    }
+
+    selectElement.appendChild(optionElement);
+  });
+
+  const selectedValue = value === undefined ? '' : String(value);
+  if (selectedValue && !Array.from(selectElement.options).some(option => option.value === selectedValue)) {
+    const fallback = document.createElement('option');
+    fallback.value = selectedValue;
+    fallback.textContent = selectedValue;
+    fallback.selected = true;
+    selectElement.appendChild(fallback);
+  }
+}
+
 async function loadCameraSettings() {
-  const settings = await request('/api/camera/settings');
+  const response = await request('/api/camera/settings');
+  const settings = response.settings ?? response;
   const form = cameraSettingsForm;
-  form.color_width.value = settings.color_width ?? 640;
-  form.color_height.value = settings.color_height ?? 480;
-  form.color_fps.value = settings.color_fps ?? 30;
+  const cameraType = response.camera_type || 'usb';
+  const available = response.available_settings || {};
+  const availableResolutions = Array.isArray(available.color_resolutions) ? available.color_resolutions : [{ width: 640, height: 480, label: '640x480' }];
+  const availableFps = Array.isArray(available.color_fps_options) ? available.color_fps_options : [30, 15];
+  const colorWidth = Number.isFinite(Number(settings.color_width)) ? Number(settings.color_width) : 640;
+  const colorHeight = Number.isFinite(Number(settings.color_height)) ? Number(settings.color_height) : 480;
+  const depthWidth = Number.isFinite(Number(settings.depth_width)) ? Number(settings.depth_width) : 640;
+  const depthHeight = Number.isFinite(Number(settings.depth_height)) ? Number(settings.depth_height) : 480;
+
+  populateSelect(form.color_resolution, availableResolutions, `${colorWidth}x${colorHeight}`);
+  populateSelect(form.color_fps, availableFps, String(Number.isFinite(Number(settings.color_fps)) ? Number(settings.color_fps) : 30));
+
+  if (cameraType === 'realsense') {
+    const depthContainer = document.querySelector('#depth-settings');
+    if (depthContainer) depthContainer.hidden = false;
+    populateSelect(form.depth_resolution, Array.isArray(available.depth_resolutions) ? available.depth_resolutions : [{ width: 640, height: 480, label: '640x480' }], `${depthWidth}x${depthHeight}`);
+    populateSelect(form.depth_fps, Array.isArray(available.depth_fps_options) ? available.depth_fps_options : [30, 15], String(Number.isFinite(Number(settings.depth_fps)) ? Number(settings.depth_fps) : 30));
+  } else {
+    const depthContainer = document.querySelector('#depth-settings');
+    if (depthContainer) depthContainer.hidden = true;
+  }
+
   form.auto_exposure.value = String(Boolean(settings.auto_exposure));
   form.auto_white_balance.value = String(Boolean(settings.auto_white_balance));
-  form.usb_device_index.value = settings.usb_device_index ?? -1;
+  if (form.usb_device_index) {
+    form.usb_device_index.value = settings.usb_device_index ?? -1;
+  }
 
   const showUsbField = settings.usb_device_index !== undefined;
   usbDeviceField.style.display = showUsbField ? 'grid' : 'none';
@@ -142,26 +238,52 @@ async function loadCameraSettings() {
 async function submitCameraSettings(event) {
   event.preventDefault();
 
-  const payload = {
-    color_width: Number(cameraSettingsForm.color_width.value),
-    color_height: Number(cameraSettingsForm.color_height.value),
-    color_fps: Number(cameraSettingsForm.color_fps.value),
-    auto_exposure: cameraSettingsForm.auto_exposure.value === 'true',
-    auto_white_balance: cameraSettingsForm.auto_white_balance.value === 'true'
-  };
-
-  if (cameraSettingsForm.usb_device_index) {
-    payload.usb_device_index = Number(cameraSettingsForm.usb_device_index.value);
+  const applyButton = event.submitter || cameraSettingsForm.querySelector('button[type="submit"]');
+  if (applyButton) {
+    applyButton.disabled = true;
+    applyButton.textContent = 'Restarting camera...';
   }
 
-  await request('/api/camera/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  try {
+    const selectedResolution = cameraSettingsForm.color_resolution.value || '640x480';
+    const [width, height] = selectedResolution.split('x').map(Number);
 
-  alert('Camera settings updated.');
-  showView('video');
+    const payload = {
+      color_width: Number(width),
+      color_height: Number(height),
+      color_fps: Number(cameraSettingsForm.color_fps.value),
+      auto_exposure: cameraSettingsForm.auto_exposure.value === 'true',
+      auto_white_balance: cameraSettingsForm.auto_white_balance.value === 'true'
+    };
+
+    if (cameraSettingsForm.depth_resolution && !cameraSettingsForm.depth_resolution.closest('#depth-settings').hidden) {
+      const selectedDepthResolution = cameraSettingsForm.depth_resolution.value || '640x480';
+      const [depthWidth, depthHeight] = selectedDepthResolution.split('x').map(Number);
+      payload.depth_enabled = true;
+      payload.depth_width = Number(depthWidth);
+      payload.depth_height = Number(depthHeight);
+      payload.depth_fps = Number(cameraSettingsForm.depth_fps.value);
+    }
+
+    if (cameraSettingsForm.usb_device_index) {
+      payload.usb_device_index = Number(cameraSettingsForm.usb_device_index.value);
+    }
+
+    await request('/api/camera/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    showView('video');
+    alert('Camera settings updated.');
+  } finally {
+    if (applyButton) {
+      applyButton.disabled = false;
+      applyButton.textContent = 'Apply Settings';
+    }
+  }
 }
 
 // Initialize Dashboard & Timers
@@ -172,6 +294,7 @@ navTabs.forEach(tab => {
     const label = tab.textContent.trim();
     if (label === 'Video') showView('video');
     if (label === 'Options') showView('options');
+    if (label === 'System') showView('system');
   });
 });
 
