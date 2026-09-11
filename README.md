@@ -60,224 +60,103 @@ creates an HttpOnly session cookie and redirects to `/dashboard`. Protected
 endpoints include `/api/camera/status`, `/api/camera/start`,
 `/api/camera/stop`, and `/api/camera/stream`.
 
-## Implementation Diagrams
-
-### State Workflow
-
-```mermaid
-stateDiagram-v2
-    [*] --> Start
-
-    state "main()" as Main {
-        [*] --> InitToggles
-        InitToggles --> SetCamera
-        SetCamera --> USB: CAMERA_USB
-        SetCamera --> RealSense: CAMERA_REALSENSE
-        USB --> ServerStart
-        RealSense --> ServerStart
-        ServerStart --> WebReady: web_server.start(port)
-        WebReady --> InitialCameraCheck: if camera.check_device_state()
-        InitialCameraCheck --> CameraActive: if camera.start()
-        InitialCameraCheck --> CameraOffline: else
-        CameraActive --> MonitorThread: std::thread(camera_reconnect_loop)
-        CameraOffline --> MonitorThread
-        MonitorThread --> ServiceLoop
-    }
-
-    ServiceLoop --> Sleep250: while toggles.running
-    Sleep250 --> ServiceLoop
-
-    ServiceLoop --> SignalStop: SIGINT / SIGTERM -> handle_signal()
-    SignalStop --> DisableFlags: toggles.running=false; camera_enabled=false; processing_enabled=false; camera_error=false
-    DisableFlags --> StopWeb: web_server.stop()
-    StopWeb --> StopCamera: camera.set_processing_enabled(false); camera.stop()
-    StopCamera --> JoinThread: join camera_monitor_thread
-    JoinThread --> [*]
-
-    state "camera_reconnect_loop()" as Reconnect {
-        [*] --> Loop
-        Loop --> CheckEnabled: while toggles.running
-        CheckEnabled --> Disabled: if !toggles.camera_enabled
-        Disabled --> StopIfRunning: if camera.is_running()
-        StopIfRunning --> ResetDisabled: camera.stop(); toggles.camera_error=false; toggles.processing_enabled=false; camera.set_processing_enabled(false)
-        ResetDisabled --> LoopWait
-
-        CheckEnabled --> LostWhileRunning: else if camera.is_running() && !camera.check_device_state()
-        LostWhileRunning --> StopCameraAndFlag: camera.stop(); toggles.camera_error=true; toggles.processing_enabled=false; camera.set_processing_enabled(false)
-        StopCameraAndFlag --> LoopWait
-
-        CheckEnabled --> StartWhenReady: else if !camera.is_running() && camera.check_device_state()
-        StartWhenReady --> TryStart: if camera.start()
-        TryStart --> EnableCamera: toggles.camera_error=false; toggles.processing_enabled=true; camera.set_processing_enabled(true)
-        EnableCamera --> LoopWait
-        TryStart --> StartFailed: else
-        StartFailed --> FlagError: toggles.camera_error=true; toggles.processing_enabled=false; camera.set_processing_enabled(false)
-        FlagError --> LoopWait
-
-        CheckEnabled --> NoDevice: else if !camera.check_device_state()
-        NoDevice --> FlagError2: toggles.camera_error=true; toggles.processing_enabled=false; camera.set_processing_enabled(false)
-        FlagError2 --> LoopWait
-
-        LoopWait --> Loop: sleep_for(250ms / 2s)
-    }
-
-    state "WebServer::accept_loop()" as Accept {
-        [*] --> WaitForClient
-        WaitForClient --> AcceptClient: accept()
-        AcceptClient --> SpawnHandler: std::thread(handle_client)
-        SpawnHandler --> WaitForClient
-    }
-
-    state "WebServer::handle_client()" as Client {
-        [*] --> ReadHeaders
-        ReadHeaders --> ParseRequest: request header complete
-        ParseRequest --> LoginRoute: if path == "/api/login"
-        LoginRoute --> ValidateCreds: credentials valid?
-        ValidateCreds --> SetSession: session created; Set-Cookie
-        ValidateCreds --> LoginError: else
-        LoginError --> CloseClient
-
-        ParseRequest --> CheckAuth: else if !is_authenticated(request)
-        CheckAuth --> AuthError: HTTP 401
-        CheckAuth --> Dispatch: else
-
-        Dispatch --> Dashboard: GET /dashboard
-        Dispatch --> Logs: GET /api/logs
-        Dispatch --> RecordStatus: GET /api/record/status
-        Dispatch --> RecordStart: POST /api/record/start
-        Dispatch --> RecordStop: POST /api/record/stop
-        Dispatch --> RecordRestart: POST /api/record/restart
-        Dispatch --> Capture: POST /api/record/capture
-        Dispatch --> SettingsGET: GET /api/camera/settings
-        Dispatch --> SettingsPOST: POST /api/camera/settings
-        Dispatch --> CameraStatus: GET /api/camera/status
-        Dispatch --> CameraStart: POST /api/camera/start
-        Dispatch --> CameraStop: POST /api/camera/stop
-        Dispatch --> Stream: GET /api/camera/stream
-        Dispatch --> NotFound: default
-
-        Dashboard --> CloseClient
-        Logs --> CloseClient
-        RecordStatus --> CloseClient
-        RecordStart --> CloseClient
-        RecordStop --> CloseClient
-        RecordRestart --> CloseClient
-        Capture --> CloseClient
-        SettingsGET --> CloseClient
-        SettingsPOST --> CloseClient
-        CameraStatus --> CloseClient
-        CameraStart --> CloseClient
-        CameraStop --> CloseClient
-        Stream --> CloseClient
-        AuthError --> CloseClient
-        NotFound --> CloseClient
-    }
-
-    state "WebServer::start_camera()" as StartCamera {
-        [*] --> StartRequest
-        StartRequest --> SetEnabled: toggles.camera_enabled = true
-        SetEnabled --> AlreadyRunning: if camera.is_running()
-        AlreadyRunning --> EnableProcessing: toggles.processing_enabled = true; camera.set_processing_enabled(true)
-        EnableProcessing --> Done
-
-        SetEnabled --> DeviceMissing: else if !camera.check_device_state()
-        DeviceMissing --> StartFailed: toggles.camera_error = true; toggles.processing_enabled = false
-        StartFailed --> Done
-
-        SetEnabled --> TryStart: else if !camera.start()
-        TryStart --> StartFailed2: toggles.camera_error = true; toggles.processing_enabled = false
-        StartFailed2 --> Done
-
-        TryStart --> StartSucceeded: else
-        StartSucceeded --> EnableProcessing2: toggles.camera_error = false; toggles.processing_enabled = true; camera.set_processing_enabled(true)
-        EnableProcessing2 --> Done
-    }
-
-    state "WebServer::stop_camera()" as StopCamera2 {
-        [*] --> StopRequest
-        StopRequest --> ClearFlags: toggles.camera_enabled = false; toggles.processing_enabled = false; toggles.camera_error = false
-        ClearFlags --> StopIfRunning: if camera.is_running()
-        StopIfRunning --> DisableAndStop: camera.set_processing_enabled(false); camera.stop()
-        DisableAndStop --> DoneStop
-    }
-
-    state "BaseSystem::start_recording()/stop_recording()/restart_recording()/capture_frame()" as Recording {
-        [*] --> Idle
-        Idle --> StartReq: POST /api/record/start or start_recording()
-        StartReq --> AlreadyRecording: if recording_active_
-        AlreadyRecording --> Idle: return true
-
-        StartReq --> PrepareVideoDir: create_directories("media/videos")
-        PrepareVideoDir --> SetActive: recording_active_ = true; last_written_sequence_ = 0
-        SetActive --> Ready
-
-        Ready --> FrameEvent: on_frame_received(frame)
-        FrameEvent --> IgnoreInactive: if !recording_active_ || frame.color empty
-        IgnoreInactive --> Ready
-        FrameEvent --> IgnoreDuplicate: else if sequence != 0 && sequence <= last_written_sequence_
-        IgnoreDuplicate --> Ready
-        FrameEvent --> EnsureWriter: else
-        EnsureWriter --> WriterOpen: if writer_.isOpened()
-        WriterOpen --> WriteFrame: writer_.write(*frame.color)
-        WriteFrame --> UpdateSeq: last_written_sequence_ = sequence
-        UpdateSeq --> Ready
-        EnsureWriter --> NeedOpen: else if !writer_.isOpened()
-        NeedOpen --> TryOpen: try_open_writer(...)
-        TryOpen --> WriterOK: if success
-        WriterOK --> WriteFrame
-        TryOpen --> WriterFail: else
-        WriterFail --> DisableRecord: recording_active_ = false
-        DisableRecord --> Ready
-
-        Ready --> StopReq: POST /api/record/stop or stop_recording()
-        StopReq --> CloseWriter: close_writer(); recording_active_ = false
-        CloseWriter --> Idle
-
-        Idle --> RestartReq: POST /api/record/restart
-        RestartReq --> StopReq
-
-        Idle --> CaptureReq: POST /api/record/capture
-        CaptureReq --> MakeDir: create_directories("media/image")
-        MakeDir --> FetchFrame: if !camera.latest_frame(frame) || frame.color empty
-        FetchFrame --> CaptureFail: return false
-        FetchFrame --> SpawnSaveThread: std::thread(imwrite)
-        SpawnSaveThread --> Idle
-    }
-
-    state "UsbCamera::acquisition_loop()" as USBLoop {
-        [*] --> Wait
-        Wait --> CheckProcessing: while running_
-        CheckProcessing --> Sleep: if !processing_enabled_
-        Sleep --> Wait
-        CheckProcessing --> ReadFrame: else
-        ReadFrame --> ValidFrame: if capture_.read(frame) && !frame.empty()
-        ValidFrame --> Publish: next.sequence = ++sequence; latest_frame_ = next.color; notify callbacks
-        Publish --> Wait
-        ReadFrame --> HotUnplug: else
-        HotUnplug --> StopReader: running_=false; capture_.release(); initialized_=false
-        StopReader --> Wait
-    }
-
-    state "RealSenseCamera::acquisition_loop()" as RSLoop {
-        [*] --> WaitRS
-        WaitRS --> CheckEnabledRS: while running_
-        CheckEnabledRS --> SleepRS: if !processing_enabled_
-        SleepRS --> WaitRS
-        CheckEnabledRS --> PollFrames: else
-        PollFrames --> TryFrames: if pipeline_.try_wait_for_frames(...)
-        TryFrames --> Align: if depth_enabled_ && align_to_color_
-        Align --> ColorRead: raw_color = get_color_frame()
-        ColorRead --> ValidRS: if !raw_color.empty()
-        ValidRS --> PublishRS: next.sequence = ++sequence; latest_frame_ = next.color; callbacks(...)
-        PublishRS --> WaitRS
-        TryFrames --> ContinueRS: else
-        ContinueRS --> WaitRS
-        PollFrames --> ExceptionRS: catch rs2::error / std::exception
-        ExceptionRS --> HotUnplugRS: log "Hot unplug detected"
-        HotUnplugRS --> WaitRS
-    }
-```
-
-## Implementation Diagrams
+## Implementation
 
 ### Worker Threads
+
+The project uses several background threads to decouple camera capture, web I/O, and recording work from the main application loop.
+
+1. Main service loop
+   - `main()` creates the camera object and starts the web server.
+   - It then initializes the camera once, starts the monitor thread, and enters a `while (toggles.running)` loop.
+   - This loop only waits and listens for shutdown signals; it does not perform heavy processing.
+
+2. Camera reconnect monitor thread
+   - `camera_reconnect_loop()` runs as a background thread.
+   - It checks `ServiceToggles::camera_enabled`, `camera.check_device_state()`, and `camera.is_running()` in a loop.
+   - If the camera is disabled, it stops the device and clears processing flags.
+   - If the camera is unplugged while running, it stops capture and sets `camera_error = true`.
+   - If the device becomes available again, it calls `camera.start()` and re-enables processing.
+
+3. Web server accept thread
+   - `WebServer::start()` creates a listening socket and starts `accept_loop()` in a dedicated thread.
+   - `accept_loop()` repeatedly calls `accept()`, then spawns a new thread for each connected client via `handle_client()`.
+
+4. Client request worker threads
+   - Each client connection is handled by `WebServer::handle_client()` in its own thread.
+   - The handler parses the HTTP request, authenticates the session, and dispatches to endpoints such as:
+     - `/api/login`
+     - `/api/camera/status`
+     - `/api/camera/start`
+     - `/api/camera/stop`
+     - `/api/camera/stream`
+     - `/api/record/start`
+     - `/api/record/stop`
+     - `/api/record/restart`
+     - `/api/record/capture`
+   - It also applies camera settings or records data depending on the requested route.
+
+5. USB camera acquisition thread
+   - `UsbCamera::start()` starts `acquisition_loop()` in a worker thread.
+   - The loop waits until `processing_enabled_` is true, reads frames from OpenCV `VideoCapture`, and publishes each frame to callbacks and the latest-frame buffer.
+   - If the device becomes unreadable, it sets `running_ = false` and releases the capture device.
+
+6. RealSense acquisition thread
+   - `RealSenseCamera::start()` starts `acquisition_loop()` in a worker thread.
+   - It polls frames with `pipeline_.try_wait_for_frames()` and optionally aligns depth frames to color.
+   - Valid color frames are cloned and then distributed to callback listeners and the latest-frame cache.
+   - The loop handles hot-unplug exceptions by logging a warning and continuing to monitor the device.
+
+7. Recording callback thread flow
+   - `BaseSystem` registers a frame callback with the selected camera.
+   - When `start_recording()` is called, it creates `media/videos`, sets `recording_active_ = true`, and prepares the output writer.
+   - Every received frame is checked for duplication and then written to the video file via `VideoWriter`.
+   - `stop_recording()` closes the writer and disables recording.
+   - `restart_recording()` stops then starts a new session.
+   - `capture_frame()` writes a JPEG snapshot to `media/image` using an async worker thread.
+
+8. Shutdown thread cleanup
+   - On shutdown, the signal handler sets the toggles to false.
+   - The main thread stops the web server, disables processing, stops the camera, and joins the monitor thread.
+   - This ensures clean teardown without leaving background loops alive.
+
+This design keeps the camera, HTTP server, and recording pipeline independent while using shared atomic flags to coordinate state changes safely across threads.
+
+### How Frames are managed for both Recording Pipeline & Web App Pipeline
+
+The frame flow starts from the active camera backend:
+
+- `UsbCamera::acquisition_loop()` reads raw frames with `capture_.read(frame)`.
+- `RealSenseCamera::acquisition_loop()` waits for frames via `pipeline_.try_wait_for_frames()`, and optionally aligns depth to color before producing the RGB image.
+- Both camera implementations build a `FrameContext` object and publish it through registered callbacks.
+
+The actual flow is:
+
+1. Camera backend produces a raw frame.
+2. The frame is wrapped in `FrameContext` with a sequence number.
+3. The camera stores the newest frame in `latest_frame_` and exposes it through `latest_frame()`.
+4. Registered callbacks receive the same frame object.
+5. `BaseSystem` subscribes to the camera callback for the recording pipeline.
+6. `WebServer` subscribes to the same callback to maintain its latest stream frame.
+
+For the recording pipeline:
+
+- `BaseSystem::on_frame_received()` checks whether recording is active and whether the frame is valid.
+- It ignores duplicate sequences using `last_written_sequence_`.
+- If the writer is not opened yet, it calls `open_writer_if_needed()` and `try_open_writer()`.
+- The frame is then written directly to the video file with `writer_.write(*frame.color)`.
+- No resizing, downsampling, or frame averaging is performed before recording.
+- The output uses the camera frame size and a fixed FPS value of `30.0`, with an optional `VISION_AI_BOX_GSTREAMER_PIPELINE` override.
+
+For the web app pipeline:
+
+- `WebServer` registers a callback that stores the latest color frame in `latest_stream_frame_` under a mutex.
+- When `/api/camera/stream` is requested, it keeps sending JPEG frames using `cv::imencode(".jpg", ...)` with `cv::IMWRITE_JPEG_QUALITY = 80`.
+- This means the web stream is compressed to JPEG before being sent to the browser.
+- There is no explicit downsampling step before the web stream; the app sends the current camera frame as-is and encodes it as JPEG at the moment of streaming.
+
+So the short answer is:
+
+- Recording path: raw frame is passed through, no downsampling, no extra compression before writing to video.
+- Web stream path: raw frame is kept in memory and compressed to JPEG right before transmission.
+- Both pipelines share the same camera frame source, but only the web stream applies JPEG encoding for browser delivery.
