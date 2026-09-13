@@ -22,10 +22,7 @@ ServiceToggles* active_toggles = nullptr;
 void handle_signal(int)
 {
     if (active_toggles) {
-        active_toggles->running = false;
-        active_toggles->camera_enabled = false;
-        active_toggles->processing_enabled = false;
-        active_toggles->camera_error = false;
+        active_toggles->request_shutdown();
     }
 }
 
@@ -155,14 +152,13 @@ int main()
 
     std::thread camera_monitor_thread(camera_reconnect_loop, std::ref(logger), std::ref(camera), std::ref(toggles));
 
-    while (toggles.running.load()) {
+    while (toggles.running.load(std::memory_order_acquire)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
-    toggles.camera_enabled = false;
-    toggles.processing_enabled = false;
-    toggles.running = false;
-    toggles.camera_error = false;
+    toggles.request_stop_camera();
+    toggles.running.store(false, std::memory_order_release);
+    toggles.camera_error.store(false, std::memory_order_release);
 
     web_server.stop();
     camera.set_processing_enabled(false);

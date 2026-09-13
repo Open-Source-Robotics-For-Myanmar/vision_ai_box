@@ -14,6 +14,40 @@
 
 class Logger;
 
+class FrameBuffer
+{
+public:
+    void push(const FrameContext& frame)
+    {
+        if (!frame.color || frame.color->empty()) {
+            return;
+        }
+        std::lock_guard lock(mutex_);
+        latest_ = frame.color;
+    }
+
+    std::shared_ptr<cv::Mat> latest() const
+    {
+        std::lock_guard lock(mutex_);
+        return latest_;
+    }
+
+    void pop()
+    {
+        std::lock_guard lock(mutex_);
+        latest_.reset();
+    }
+
+    void clear()
+    {
+        pop();
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::shared_ptr<cv::Mat> latest_;
+};
+
 class WebServer
 {
 public:
@@ -47,6 +81,7 @@ private:
     std::vector<std::thread> client_threads_;
     mutable std::mutex sessions_mutex_;
     mutable std::mutex stream_mutex_;
-    std::shared_ptr<cv::Mat> latest_stream_frame_;
+    FrameBuffer latest_stream_frame_;
+    static constexpr std::size_t kMaxClientConnections = 8;
     std::vector<std::string> sessions_;
 };

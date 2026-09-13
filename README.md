@@ -3,7 +3,7 @@
 docker run --rm -it \
   --privileged \
   --network host \
-  -v /home/mr_robot/Desktop/core3:/home/ghost/core3 \
+  -v /home/ghost/Desktop/core3:/home/ghost/core3 \
   -v /dev:/dev \
   doxchanger/private:vision_ai_box_builder \
   bash

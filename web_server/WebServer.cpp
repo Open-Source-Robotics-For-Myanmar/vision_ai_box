@@ -197,11 +197,7 @@ WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& tog
     : logger_(logger), camera_(camera), toggles_(toggles), base_system_(logger, camera)
 {
     camera_.register_frame_callback([this](const FrameContext& frame) {
-        if (!frame.color || frame.color->empty()) {
-            return;
-        }
-        std::lock_guard lock(stream_mutex_);
-        latest_stream_frame_ = frame.color;
+        latest_stream_frame_.push(frame);
     });
 }
 
@@ -278,8 +274,15 @@ void WebServer::accept_loop()
             if (running_) logger_.log(LogLevel::WARN, "WEB_SERVER", "Accept failed: " + std::string(std::strerror(errno)));
             continue;
         }
+
         {
             std::lock_guard lock(clients_mutex_);
+            if (client_sockets_.size() >= kMaxClientConnections) {
+                logger_.log(LogLevel::WARN, "WEB_SERVER", "Rejecting client connection: limit reached");
+                shutdown(client, SHUT_RDWR);
+                close(client);
+                continue;
+            }
             client_sockets_.push_back(client);
             client_threads_.emplace_back(&WebServer::handle_client, this, client);
         }
@@ -303,34 +306,37 @@ bool WebServer::is_authenticated(const std::string& request) const
 bool WebServer::start_camera()
 {
     std::lock_guard lock(camera_control_mutex_);
-    toggles_.camera_enabled = true;
+    if (!toggles_.request_start_camera()) {
+        logger_.log(LogLevel::WARN, "CAMERA", "Rejected camera start request due to invalid system state");
+        return false;
+    }
 
     if (camera_.is_running()) {
-        toggles_.camera_error = false;
-        toggles_.processing_enabled = true;
+        toggles_.camera_error.store(false, std::memory_order_release);
+        toggles_.processing_enabled.store(true, std::memory_order_release);
         camera_.set_processing_enabled(true);
         logger_.log(LogLevel::INFO, "CAMERA", "Camera Connected");
         return true;
     }
 
     if (!camera_.check_device_state()) {
-        toggles_.camera_error = true;
-        toggles_.processing_enabled = false;
+        toggles_.camera_error.store(true, std::memory_order_release);
+        toggles_.processing_enabled.store(false, std::memory_order_release);
         camera_.set_processing_enabled(false);
         logger_.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
         return false;
     }
 
     if (!camera_.start()) {
-        toggles_.camera_error = true;
-        toggles_.processing_enabled = false;
+        toggles_.camera_error.store(true, std::memory_order_release);
+        toggles_.processing_enabled.store(false, std::memory_order_release);
         camera_.set_processing_enabled(false);
         logger_.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
         return false;
     }
 
-    toggles_.camera_error = false;
-    toggles_.processing_enabled = true;
+    toggles_.camera_error.store(false, std::memory_order_release);
+    toggles_.processing_enabled.store(true, std::memory_order_release);
     camera_.set_processing_enabled(true);
     logger_.log(LogLevel::INFO, "CAMERA", "Camera Connected");
     return true;
@@ -340,9 +346,10 @@ void WebServer::stop_camera()
 {
     std::lock_guard lock(camera_control_mutex_);
     stream_generation_.fetch_add(1, std::memory_order_release);
-    toggles_.camera_enabled = false;
-    toggles_.processing_enabled = false;
-    toggles_.camera_error = false;
+    if (!toggles_.request_stop_camera()) {
+        logger_.log(LogLevel::WARN, "CAMERA", "Camera stop rejected while shutting down");
+        return;
+    }
 
     if (camera_.is_running()) {
         camera_.set_processing_enabled(false);
@@ -362,10 +369,7 @@ bool WebServer::apply_camera_settings(const CameraSettings& settings)
     const bool was_recording = base_system_.is_recording();
     if (was_recording) {
         base_system_.stop_recording();
-        {
-            std::lock_guard stream_lock(stream_mutex_);
-            latest_stream_frame_.reset();
-        }
+        latest_stream_frame_.clear();
     }
 
     std::lock_guard lock(camera_control_mutex_);
@@ -567,11 +571,7 @@ void WebServer::handle_client(int client_socket)
         if (send_all(client_socket, header)) {
             while (running_ && camera_.is_running() &&
                    stream_generation == stream_generation_.load(std::memory_order_acquire)) {
-                std::shared_ptr<cv::Mat> frame_ptr;
-                {
-                    std::lock_guard lock(stream_mutex_);
-                    frame_ptr = latest_stream_frame_;
-                }
+                const std::shared_ptr<cv::Mat> frame_ptr = latest_stream_frame_.latest();
                 if (!frame_ptr || frame_ptr->empty()) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
