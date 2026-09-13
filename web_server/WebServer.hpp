@@ -77,8 +77,6 @@ private:
     BaseSystem base_system_;
 
     std::atomic<bool> running_{false};
-    std::atomic<bool> recording_disconnect_logged_{false};
-    std::atomic<bool> recording_refresh_logged_{false};
 
     int listen_socket_{-1};
     std::uint16_t port_{0};
