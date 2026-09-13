@@ -2,6 +2,7 @@ const loginForm = document.querySelector('#login-form');
 const loginContainer = document.querySelector('#login-container');
 const dashboard = document.querySelector('#dashboard');
 const viewVideo = document.querySelector('#view-video');
+const viewQuery = document.querySelector('#view-query');
 const viewOptions = document.querySelector('#view-options');
 const loginMessage = document.querySelector('#login-message');
 const cameraToggle = document.querySelector('#camera-toggle');
@@ -19,7 +20,14 @@ const cameraSettingsForm = document.querySelector('#camera-settings-form');
 const cancelSettingsBtn = document.querySelector('#cancel-settings-btn');
 const usbDeviceField = document.querySelector('#usb-device-field');
 const viewSystem = document.querySelector('#view-system');
+const querySearchInput = document.querySelector('#query-search');
+const queryDateFilter = document.querySelector('#query-date-filter');
+const queryTypeFilter = document.querySelector('#query-type-filter');
+const queryMediaList = document.querySelector('#query-session-list');
 const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
+
+let queryMedia = [];
+let expandedGroupIds = new Set();
 
 let toggleRequestActive = false;
 let streamActive = false;
@@ -70,14 +78,14 @@ function startRecordingTimer() {
 function startLiveClock() {
   function updateClock() {
     const now = new Date();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
     const year = now.getFullYear();
     const hours = String(now.getHours()).padStart(2, '0');
     const minutes = String(now.getMinutes()).padStart(2, '0');
     const seconds = String(now.getSeconds()).padStart(2, '0');
-    
-    liveDatetime.textContent = `${month}/${day}/${year} ${hours}:${minutes}:${seconds}`;
+
+    liveDatetime.textContent = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
   }
   updateClock();
   setInterval(updateClock, 1000);
@@ -186,26 +194,48 @@ async function refreshStatus() {
     } else {
       stopRecordingTimer();
     }
+
+    const canRecord = canRecordWithCamera();
+    recordToggleBtn.disabled = !canRecord;
+    restartRecordBtn.disabled = !canRecord;
+    captureBtn.disabled = !canRecord;
   } catch (error) {
     recordStatusText.textContent = 'Status unavailable';
     stopRecordingTimer();
   }
 }
 
+function canRecordWithCamera() {
+  if (!cameraToggle || !cameraStatus) return false;
+  if (!cameraToggle.checked) return false;
+
+  const state = cameraStatus.textContent.trim();
+  const recordingState = recordStatusText ? recordStatusText.textContent.trim() : '';
+  return state === 'Running' || recordingState === 'Recording';
+}
+
 function showView(viewName) {
   const isVideo = viewName === 'video';
+  const isQuery = viewName === 'query';
   const isOptions = viewName === 'options';
   const isSystem = viewName === 'system';
 
   viewVideo.hidden = !isVideo;
+  if (viewQuery) viewQuery.hidden = !isQuery;
   viewOptions.hidden = !isOptions;
   if (viewSystem) viewSystem.hidden = !isSystem;
 
   navTabs.forEach(tab => {
     const label = tab.textContent.trim();
-    const active = label === (isVideo ? 'Video' : isOptions ? 'Options' : isSystem ? 'System' : 'Video');
+    const active = label === (isVideo ? 'Video' : isQuery ? 'Query data' : isOptions ? 'Options' : isSystem ? 'System' : 'Video');
     tab.classList.toggle('active', active);
   });
+
+  if (isQuery) {
+    fetchQueryMedia().catch(error => {
+      console.error('Unable to load query data', error);
+    });
+  }
 
   if (isOptions && !viewOptions.dataset.loaded) {
     loadCameraSettings().catch(() => {
@@ -259,6 +289,189 @@ function populateSelect(selectElement, options, value) {
     fallback.textContent = selectedValue;
     fallback.selected = true;
     selectElement.appendChild(fallback);
+  }
+}
+
+function getFileExtensionName(fileName) {
+  if (!fileName) return 'file';
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.mp4') || lower.endsWith('.avi') || lower.endsWith('.mov') || lower.endsWith('.mkv')) return '🎬';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.webp') || lower.endsWith('.bmp')) return '🖼️';
+  return '📄';
+}
+
+function renderQueryTree(node, depth = 0) {
+  const wrapper = document.createElement('div');
+  wrapper.style.marginLeft = depth ? `${depth * 12}px` : '0';
+  wrapper.className = 'query-node ' + (node.type === 'folder' ? 'folder' : 'file');
+
+  const main = document.createElement('div');
+  main.className = 'query-node-main';
+  const icon = document.createElement('span');
+  icon.textContent = node.type === 'folder' ? '📁' : getFileExtensionName(node.name);
+  main.appendChild(icon);
+
+  if (node.type === 'folder') {
+    const text = document.createElement('span');
+    text.textContent = node.name;
+    main.appendChild(text);
+  } else {
+    const link = document.createElement('a');
+    link.className = 'query-file-link';
+    link.href = '/api/query/media?path=' + encodeURIComponent(node.path);
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = node.name;
+    main.appendChild(link);
+  }
+
+  wrapper.appendChild(main);
+
+  if (node.type === 'folder' && Array.isArray(node.children) && node.children.length) {
+    const children = document.createElement('div');
+    children.style.display = 'grid';
+    children.style.gap = '2px';
+    children.style.marginTop = '4px';
+    node.children.forEach(child => {
+      children.appendChild(renderQueryTree(child, depth + 1));
+    });
+    wrapper.appendChild(children);
+  }
+
+  return wrapper;
+}
+
+function normalizeDateValue(value) {
+  if (!value) return '';
+
+  const text = String(value).trim();
+  if (!text) return '';
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+
+  const match = text.match(/(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (match) {
+    const [, day, month, year] = match;
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
+  return '';
+}
+
+function renderMediaCard(mediaItem) {
+  const card = document.createElement('div');
+  card.className = 'query-session-card';
+  if (expandedGroupIds.has(mediaItem.id)) {
+    card.classList.add('expanded');
+  }
+
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'query-session-row';
+  row.dataset.groupId = mediaItem.id;
+
+  const meta = document.createElement('div');
+  meta.className = 'query-session-meta';
+
+  const date = document.createElement('span');
+  date.className = 'query-session-date';
+  date.textContent = mediaItem.date || mediaItem.name || mediaItem.id;
+  meta.appendChild(date);
+
+  const itemName = document.createElement('span');
+  itemName.className = 'query-session-id';
+  itemName.textContent = mediaItem.name || mediaItem.id;
+  meta.appendChild(itemName);
+
+  const icons = document.createElement('div');
+  icons.className = 'query-session-icons';
+  const counts = mediaItem.counts || {};
+  if (Number(counts.video) > 0) {
+    const videoIcon = document.createElement('span');
+    videoIcon.className = 'query-media-icon';
+    videoIcon.textContent = '🎬';
+    videoIcon.title = `${counts.video} video`;
+    icons.appendChild(videoIcon);
+  }
+  if (Number(counts.capture) > 0) {
+    const captureIcon = document.createElement('span');
+    captureIcon.className = 'query-media-icon';
+    captureIcon.textContent = '🖼️';
+    captureIcon.title = `${counts.capture} captured photos`;
+    icons.appendChild(captureIcon);
+  }
+  meta.appendChild(icons);
+
+  row.appendChild(meta);
+
+  const toggle = document.createElement('span');
+  toggle.className = 'query-session-toggle';
+  toggle.textContent = expandedGroupIds.has(mediaItem.id) ? '▾' : '▸';
+  row.appendChild(toggle);
+
+  const body = document.createElement('div');
+  body.className = 'query-session-body';
+
+  const tree = document.createElement('div');
+  tree.className = 'query-tree';
+  const root = mediaItem.tree || { name: mediaItem.id, type: 'folder', children: [] };
+  tree.appendChild(renderQueryTree(root));
+  body.appendChild(tree);
+
+  card.appendChild(row);
+  card.appendChild(body);
+  return card;
+}
+
+function applyQueryFilters() {
+  if (!queryMediaList) return;
+
+  const searchValue = (querySearchInput ? querySearchInput.value : '').trim().toLowerCase();
+  const dateFilter = queryDateFilter ? queryDateFilter.value : '';
+  const typeFilter = queryTypeFilter ? queryTypeFilter.value : 'all';
+
+  const visibleMedia = queryMedia.filter(item => {
+    const matchesSearch = !searchValue || [item.id, item.name, item.date, ...(item.files || []).map(file => file.name || '')].join(' ').toLowerCase().includes(searchValue);
+    const normalizedFilter = normalizeDateValue(dateFilter);
+    const itemDate = normalizeDateValue(item.date || '');
+    const matchesDate = !normalizedFilter || itemDate === normalizedFilter;
+
+    const itemType = String(item.type || '').toLowerCase();
+    const fileKinds = (item.files || []).map(file => String(file.kind || '').toLowerCase());
+    const hasVideo = itemType === 'recording' || itemType === 'video' || fileKinds.includes('video');
+    const hasCapture = itemType === 'capture' || itemType === 'captured_photo' || fileKinds.includes('captured_photo');
+    const matchesType = typeFilter === 'all' ||
+      (typeFilter === 'video' && hasVideo) ||
+      (typeFilter === 'capture' && hasCapture);
+
+    return matchesSearch && matchesDate && matchesType;
+  });
+
+  queryMediaList.innerHTML = '';
+  if (!visibleMedia.length) {
+    const empty = document.createElement('div');
+    empty.className = 'query-empty-state';
+    empty.textContent = 'No matching media found.';
+    queryMediaList.appendChild(empty);
+    return;
+  }
+
+  visibleMedia.forEach(item => {
+    queryMediaList.appendChild(renderMediaCard(item));
+  });
+}
+
+async function fetchQueryMedia() {
+  try {
+    const media = await request('/api/query/media');
+    queryMedia = Array.isArray(media) ? media : [];
+    applyQueryFilters();
+  } catch (error) {
+    if (queryMediaList) {
+      queryMediaList.innerHTML = '<div class="query-empty-state">Unable to load media library.</div>';
+    }
   }
 }
 
@@ -357,10 +570,55 @@ navTabs.forEach(tab => {
   tab.addEventListener('click', () => {
     const label = tab.textContent.trim();
     if (label === 'Video') showView('video');
+    if (label === 'Query data') showView('query');
     if (label === 'Options') showView('options');
     if (label === 'System') showView('system');
   });
 });
+
+if (querySearchInput) querySearchInput.addEventListener('input', applyQueryFilters);
+if (queryDateFilter) {
+  queryDateFilter.addEventListener('input', applyQueryFilters);
+  queryDateFilter.addEventListener('change', applyQueryFilters);
+  queryDateFilter.addEventListener('click', () => {
+    if (typeof queryDateFilter.showPicker === 'function') {
+      queryDateFilter.showPicker();
+    }
+  });
+  queryDateFilter.addEventListener('focus', () => {
+    if (typeof queryDateFilter.showPicker === 'function') {
+      queryDateFilter.showPicker();
+    }
+  });
+}
+if (queryTypeFilter) queryTypeFilter.addEventListener('change', applyQueryFilters);
+
+if (queryMediaList) {
+  queryMediaList.addEventListener('click', event => {
+    const fileLink = event.target.closest('.query-file-link');
+    if (fileLink) {
+      return;
+    }
+
+    const row = event.target.closest('.query-session-row');
+    if (!row) {
+      return;
+    }
+
+    const groupId = row.dataset.groupId;
+    if (!groupId) {
+      return;
+    }
+
+    if (expandedGroupIds.has(groupId)) {
+      expandedGroupIds.delete(groupId);
+    } else {
+      expandedGroupIds.add(groupId);
+    }
+
+    applyQueryFilters();
+  });
+}
 
 cameraSettingsForm.addEventListener('submit', submitCameraSettings);
 cancelSettingsBtn.addEventListener('click', () => showView('video'));
@@ -414,6 +672,11 @@ cameraToggle.addEventListener('change', async () => {
 });
 
 recordToggleBtn.addEventListener('click', async () => {
+  if (!canRecordWithCamera()) {
+    alert('camera must be power on (or) open your camera by check in checkbox');
+    return;
+  }
+
   if (recordingRequestActive) return;
   recordingRequestActive = true;
   recordToggleBtn.disabled = true;
@@ -432,6 +695,11 @@ recordToggleBtn.addEventListener('click', async () => {
 });
 
 restartRecordBtn.addEventListener('click', async () => {
+  if (!canRecordWithCamera()) {
+    alert('camera must be power on (or) open your camera by check in checkbox');
+    return;
+  }
+
   if (recordingRequestActive) return;
   recordingRequestActive = true;
   restartRecordBtn.disabled = true;
@@ -448,6 +716,11 @@ restartRecordBtn.addEventListener('click', async () => {
 });
 
 captureBtn.addEventListener('click', async () => {
+  if (!canRecordWithCamera()) {
+    alert('camera must be power on (or) open your camera by check in checkbox');
+    return;
+  }
+
   if (recordingRequestActive) return;
   recordingRequestActive = true;
   captureBtn.disabled = true;

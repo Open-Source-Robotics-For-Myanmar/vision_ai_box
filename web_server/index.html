@@ -190,6 +190,57 @@
     .control-group { display: grid; grid-template-columns: 80px 1fr; align-items: center; gap: 6px; margin-bottom: 8px; }
     .control-group select, .control-group input { background: #121212; border: 1px solid var(--panel-border); color: #fff; padding: 4px; border-radius: 3px; font-size: 11px; }
 
+    .query-shell { max-width: 1400px; margin: 18px auto; display: grid; gap: 14px; }
+    .query-filter-bar {
+      background: var(--panel-bg); border: 1px solid var(--panel-border); padding: 12px;
+      display: grid; grid-template-columns: minmax(220px, 2.6fr) minmax(180px, 1.2fr) minmax(180px, 1fr);
+      gap: 12px; align-items: end;
+    }
+    .query-search input, .query-filter-bar select, .query-filter-bar input {
+      width: 100%; background: #121212; border: 1px solid var(--panel-border); color: #fff; padding: 8px 10px; border-radius: 4px; font-size: 12px;
+    }
+    .query-search {
+      position: relative;
+    }
+    .query-search .search-icon {
+      position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 12px;
+    }
+    .query-search input { padding-left: 30px; }
+    .query-date-group { display: flex; gap: 10px; }
+    .query-date-field { display: grid; gap: 5px; flex: 1; }
+    .query-field-label { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .query-session-list { display: grid; gap: 10px; }
+    .query-session-card { background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 6px; overflow: hidden; }
+    .query-session-row {
+      width: 100%; background: #202020; border: 0; color: var(--text-main); text-align: left; cursor: pointer;
+      padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px;
+    }
+    .query-session-row:hover { background: #262626; }
+    .query-session-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+    .query-session-date { font-weight: 600; color: #d9d9d9; }
+    .query-session-id { color: var(--text-muted); font-family: 'Consolas', monospace; }
+    .query-session-icons { display: flex; gap: 6px; flex-wrap: wrap; margin-left: 6px; }
+    .query-media-icon {
+      display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 24px;
+      border-radius: 4px; background: rgba(30,136,229,0.12); border: 1px solid rgba(30,136,229,0.2); color: #a4d4ff; font-size: 12px;
+    }
+    .query-session-toggle { font-size: 16px; color: var(--text-muted); min-width: 18px; text-align: center; }
+    .query-session-body { display: none; padding: 0 12px 12px; }
+    .query-session-card.expanded .query-session-body { display: block; }
+    .query-tree {
+      background: #151515; border: 1px solid var(--panel-border); border-radius: 4px; padding: 8px 10px; display: grid; gap: 6px;
+    }
+    .query-node { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px; }
+    .query-node.folder > .query-node-main { color: #d9d9d9; font-weight: 600; }
+    .query-node.file > .query-node-main { color: #b5d4ff; }
+    .query-node-main {
+      display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 1;
+    }
+    .query-file-link {
+      color: #cfe4ff; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .query-file-link:hover { text-decoration: underline; }
+    .query-empty-state { padding: 20px; text-align: center; color: var(--text-muted); background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 6px; }
     [hidden] { display: none !important; }
   </style>
 </head>
@@ -367,6 +418,33 @@
 
         </div>
 
+      </div>
+    </div>
+
+    <div id="view-query" hidden>
+      <div class="query-shell">
+        <div class="query-filter-bar">
+          <div class="query-search">
+            <span class="search-icon">⌕</span>
+            <input id="query-search" type="text" placeholder="Search media" aria-label="Search media">
+          </div>
+
+          <div class="query-date-field">
+            <label class="query-field-label" for="query-date-filter">Date</label>
+            <input id="query-date-filter" type="date">
+          </div>
+
+          <div class="query-date-field">
+            <label class="query-field-label" for="query-type-filter">Type</label>
+            <select id="query-type-filter">
+              <option value="all">All</option>
+              <option value="video">Video</option>
+              <option value="capture">Captured Photo</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="query-session-list" class="query-session-list"></div>
       </div>
     </div>
 

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <filesystem>
 #include <fstream>
 #include <netinet/in.h>
 #include <nlohmann/json.hpp>
@@ -190,6 +191,61 @@ std::string read_static_file(const std::string& file_name)
         if (file) return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
     }
     return {};
+}
+
+std::string url_decode(const std::string& value)
+{
+    std::string decoded;
+    decoded.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size()) {
+            const std::string hex = value.substr(i + 1, 2);
+            try {
+                const unsigned char byte = static_cast<unsigned char>(std::stoul(hex, nullptr, 16));
+                decoded.push_back(static_cast<char>(byte));
+                i += 2;
+            } catch (...) {
+                decoded.push_back(value[i]);
+            }
+        } else if (value[i] == '+') {
+            decoded.push_back(' ');
+        } else {
+            decoded.push_back(value[i]);
+        }
+    }
+    return decoded;
+}
+
+std::string query_param(const std::string& query, const std::string& name)
+{
+    const std::string prefix = name + "=";
+    const std::size_t begin = query.find(prefix);
+    if (begin == std::string::npos) return {};
+    std::size_t start = begin + prefix.size();
+    std::size_t end = query.find('&', start);
+    if (end == std::string::npos) end = query.size();
+    return url_decode(query.substr(start, end - start));
+}
+
+std::string content_type_for_path(const std::string& file_path)
+{
+    const std::string lower = [&]() {
+        std::string copy = file_path;
+        std::transform(copy.begin(), copy.end(), copy.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return copy;
+    }();
+
+    if (lower.ends_with(".mp4")) return "video/mp4";
+    if (lower.ends_with(".jpg") || lower.ends_with(".jpeg")) return "image/jpeg";
+    if (lower.ends_with(".png")) return "image/png";
+    if (lower.ends_with(".webp")) return "image/webp";
+    if (lower.ends_with(".bmp")) return "image/bmp";
+    if (lower.ends_with(".mkv")) return "video/x-matroska";
+    if (lower.ends_with(".avi")) return "video/x-msvideo";
+    if (lower.ends_with(".mov")) return "video/quicktime";
+    return "application/octet-stream";
 }
 }
 
@@ -483,9 +539,44 @@ void WebServer::handle_client(int client_socket)
         json payload = json::array();
         for (const auto& line : lines) payload.push_back(line);
         send_all(client_socket, http_response(200, "application/json", payload.dump()));
+    } else if (method == "GET" && path == "/api/query/media") {
+        const std::string raw_query = target.find('?') == std::string::npos ? "" : target.substr(target.find('?') + 1);
+        const std::string request_path = query_param(raw_query, "path");
+
+        if (request_path.empty()) {
+            const json media = base_system_.discover_media_library();
+            send_all(client_socket, http_response(200, "application/json", media.dump()));
+            return;
+        }
+
+        const std::filesystem::path resolved = std::filesystem::weakly_canonical(std::filesystem::path(request_path));
+        const std::filesystem::path root = std::filesystem::current_path() / "media";
+        const std::string canonical = resolved.string();
+        const bool is_within_media = canonical.rfind(root.string(), 0) == 0 || canonical.rfind("media", 0) == 0;
+        if (!std::filesystem::exists(resolved) || !std::filesystem::is_regular_file(resolved) || !is_within_media) {
+            send_all(client_socket, http_response(404, "application/json", json_response({{"error", "media not found"}})));
+        } else {
+            std::ifstream input(resolved, std::ios::binary);
+            if (!input) {
+                send_all(client_socket, http_response(500, "application/json", json_response({{"error", "unable to read file"}})));
+            } else {
+                std::string content((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+                const std::string headers =
+                    "Content-Type: " + content_type_for_path(canonical) + "\r\n"
+                    + "Content-Length: " + std::to_string(content.size()) + "\r\n"
+                    + "Content-Disposition: inline; filename=\"" + resolved.filename().string() + "\"\r\n"
+                    + "Cache-Control: no-cache\r\n"
+                    + "Connection: close\r\n\r\n";
+                send_all(client_socket, "HTTP/1.1 200 OK\r\n" + headers + content);
+            }
+        }
     } else if (method == "GET" && path == "/api/record/status") {
+        const bool recording = base_system_.is_recording();
+        if (recording) {
+            logger_.log(LogLevel::INFO, "WEB_SERVER", "Background recording still active; browser session refreshed");
+        }
         send_all(client_socket, http_response(200, "application/json", json_response({
-            {"recording", base_system_.is_recording()},
+            {"recording", recording},
             {"current_file", base_system_.current_recording_file()}
         })));
     } else if (method == "POST" && path == "/api/record/start") {
@@ -592,6 +683,7 @@ void WebServer::handle_client(int client_socket)
     } else {
         send_all(client_socket, http_response(404, "application/json", json_response({{"error", "not found"}})));
     }
+    logger_.log(LogLevel::INFO, "WEB_SERVER", "Client disconnected; background recording remains active in server process");
     close(client_socket);
     std::lock_guard lock(clients_mutex_);
     client_sockets_.erase(std::remove(client_sockets_.begin(), client_sockets_.end(), client_socket), client_sockets_.end());

@@ -14,6 +14,7 @@ using SelectedCamera = RealSenseCamera;
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <opencv2/videoio.hpp>
 #include <string>
 #include <thread>
@@ -34,6 +35,7 @@ public:
     void on_frame_received(const FrameContext& frame);
     bool is_recording() const noexcept;
     std::string current_recording_file() const;
+    nlohmann::json discover_media_library() const;
 
 private:
     void open_writer_if_needed(const cv::Mat& frame);

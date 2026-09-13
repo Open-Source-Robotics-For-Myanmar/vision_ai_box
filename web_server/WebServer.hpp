@@ -93,7 +93,8 @@ private:
     mutable std::mutex stream_mutex_;
     FrameBuffer latest_stream_frame_;
 
-    // Number of maximum simultaneous client connections allowed
-    static constexpr std::size_t kMaxClientConnections = 8;
+    // Browsers commonly open several simultaneous HTTP connections for the UI,
+    // polling, and the MJPEG stream, so this must be higher than the single-tab case.
+    static constexpr std::size_t kMaxClientConnections = 32;
     std::vector<std::string> sessions_;
 };
