@@ -214,6 +214,7 @@ bool BaseSystem::start_recording()
         return false;
     }
 
+    recording_start_time_ = std::chrono::steady_clock::now();
     recording_active_.store(true, std::memory_order_release);
     last_written_sequence_.store(0, std::memory_order_release);
     logger_.log(LogLevel::INFO, "BASE_SYSTEM", "Recording callback enabled for: " + current_recording_file_);
@@ -294,6 +295,16 @@ void BaseSystem::on_frame_received(const FrameContext& frame)
 bool BaseSystem::is_recording() const noexcept
 {
     return recording_active_.load(std::memory_order_acquire);
+}
+
+std::uint64_t BaseSystem::get_elapsed_seconds() const
+{
+    if (!recording_active_.load(std::memory_order_acquire)) {
+        return 0;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::seconds>(now - recording_start_time_).count();
 }
 
 std::string BaseSystem::current_recording_file() const

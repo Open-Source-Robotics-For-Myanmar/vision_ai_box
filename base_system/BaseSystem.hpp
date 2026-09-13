@@ -11,6 +11,7 @@ using SelectedCamera = RealSenseCamera;
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -34,6 +35,7 @@ public:
     bool capture_frame();
     void on_frame_received(const FrameContext& frame);
     bool is_recording() const noexcept;
+    std::uint64_t get_elapsed_seconds() const;
     std::string current_recording_file() const;
     nlohmann::json discover_media_library() const;
 
@@ -52,6 +54,7 @@ private:
     std::thread recording_thread_;
     std::atomic<bool> recording_active_{false};
     std::atomic<std::uint64_t> last_written_sequence_{0};
+    std::chrono::steady_clock::time_point recording_start_time_{};
     std::string current_recording_file_;
     cv::VideoWriter writer_;
 };

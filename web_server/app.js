@@ -55,23 +55,25 @@ function stopRecordingTimer() {
   }
 }
 
-function startRecordingTimer() {
+function startRecordingTimer(initialElapsedSeconds = 0) {
   const recordDuration = document.querySelector('#record-duration');
   if (!recordDuration) return;
 
-  recordingStartedAt = Date.now();
+  recordingStartedAt = Date.now() - (initialElapsedSeconds * 1000);
   recordDuration.hidden = false;
-  recordDuration.textContent = '00:00:00';
 
   if (recordingTimerId) {
     clearInterval(recordingTimerId);
   }
 
-  recordingTimerId = setInterval(() => {
+  const updateTimer = () => {
     if (!recordingStartedAt) return;
     const elapsedSeconds = Math.floor((Date.now() - recordingStartedAt) / 1000);
     recordDuration.textContent = formatDuration(elapsedSeconds);
-  }, 1000);
+  };
+
+  updateTimer();
+  recordingTimerId = setInterval(updateTimer, 1000);
 }
 
 // Real-Time Green Clock Function
@@ -178,6 +180,8 @@ async function refreshStatus() {
   try {
     const recording = await request('/api/record/status');
     const active = Boolean(recording.recording);
+    const elapsedSeconds = Number(recording.elapsed_seconds || 0);
+
     const dot = recordStatusIndicator.querySelector('span');
     dot.style.background = active ? '#ff3b30' : '#666';
     recordStatusText.textContent = active ? 'Recording' : 'Idle';
@@ -186,10 +190,11 @@ async function refreshStatus() {
 
     const recordDuration = document.querySelector('#record-duration');
     if (active) {
-      if (!recordDuration || recordDuration.hidden) {
-        startRecordingTimer();
-      } else if (recordingStartedAt === null) {
-        startRecordingTimer();
+      const timerElapsedSeconds = Math.max(0, Number(recording.elapsed_seconds || 0));
+      const timerDriftSeconds = recordingStartedAt ? Math.abs(Math.floor((Date.now() - recordingStartedAt) / 1000) - timerElapsedSeconds) : Number.MAX_SAFE_INTEGER;
+
+      if (!recordingTimerId || !recordingStartedAt || timerDriftSeconds > 1) {
+        startRecordingTimer(timerElapsedSeconds);
       }
     } else {
       stopRecordingTimer();
@@ -628,9 +633,10 @@ if (window.location.pathname === '/dashboard') {
   dashboard.hidden = false;
   showView('video');
   refreshStatus().catch(error => { cameraStatus.textContent = error.message; });
-  
+
   fetchSessionLogs();
   setInterval(fetchSessionLogs, 1000);
+  setInterval(refreshStatus, 2000);
 }
 
 // Login Event Listener
