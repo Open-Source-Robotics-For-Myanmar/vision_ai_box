@@ -24,6 +24,47 @@ const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
 let toggleRequestActive = false;
 let streamActive = false;
 let recordingRequestActive = false;
+let recordingTimerId = null;
+let recordingStartedAt = null;
+
+function formatDuration(totalSeconds) {
+  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function stopRecordingTimer() {
+  if (recordingTimerId) {
+    clearInterval(recordingTimerId);
+    recordingTimerId = null;
+  }
+  recordingStartedAt = null;
+  const recordDuration = document.querySelector('#record-duration');
+  if (recordDuration) {
+    recordDuration.hidden = true;
+    recordDuration.textContent = '00:00:00';
+  }
+}
+
+function startRecordingTimer() {
+  const recordDuration = document.querySelector('#record-duration');
+  if (!recordDuration) return;
+
+  recordingStartedAt = Date.now();
+  recordDuration.hidden = false;
+  recordDuration.textContent = '00:00:00';
+
+  if (recordingTimerId) {
+    clearInterval(recordingTimerId);
+  }
+
+  recordingTimerId = setInterval(() => {
+    if (!recordingStartedAt) return;
+    const elapsedSeconds = Math.floor((Date.now() - recordingStartedAt) / 1000);
+    recordDuration.textContent = formatDuration(elapsedSeconds);
+  }, 1000);
+}
 
 // Real-Time Green Clock Function
 function startLiveClock() {
@@ -134,8 +175,20 @@ async function refreshStatus() {
     recordStatusText.textContent = active ? 'Recording' : 'Idle';
     recordToggleBtn.textContent = active ? 'Stop Record' : 'Start Record';
     recordToggleBtn.style.background = active ? '#d32f2f' : '#1e88e5';
+
+    const recordDuration = document.querySelector('#record-duration');
+    if (active) {
+      if (!recordDuration || recordDuration.hidden) {
+        startRecordingTimer();
+      } else if (recordingStartedAt === null) {
+        startRecordingTimer();
+      }
+    } else {
+      stopRecordingTimer();
+    }
   } catch (error) {
     recordStatusText.textContent = 'Status unavailable';
+    stopRecordingTimer();
   }
 }
 

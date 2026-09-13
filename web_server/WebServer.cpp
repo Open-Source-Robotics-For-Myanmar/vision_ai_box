@@ -394,8 +394,8 @@ bool WebServer::apply_camera_settings(const CameraSettings& settings)
             }
             return false;
         }
-        toggles_.camera_enabled = true;
-        toggles_.processing_enabled = true;
+        toggles_.camera_enabled.store(true, std::memory_order_release);
+        toggles_.processing_enabled.store(true, std::memory_order_release);
         camera_.set_processing_enabled(true);
         stream_generation_.fetch_add(1, std::memory_order_release);
     }
