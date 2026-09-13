@@ -522,6 +522,7 @@ void WebServer::handle_client(int client_socket)
                 const std::string session = make_session_id();
                 { std::lock_guard lock(sessions_mutex_); sessions_.push_back(session); }
                 recording_disconnect_logged_.store(false, std::memory_order_release);
+                recording_refresh_logged_.store(false, std::memory_order_release);
                 send_all(client_socket, http_response(200, "application/json", json_response({{"authenticated", true}}),
                     "Set-Cookie: VISION_SESSION=" + session + "; Path=/; HttpOnly; SameSite=Strict\r\n"));
                 logger_.log(LogLevel::INFO, "AUTH", "Authenticated web session created");
@@ -573,8 +574,16 @@ void WebServer::handle_client(int client_socket)
         }
     } else if (method == "GET" && path == "/api/record/status") {
         const bool recording = base_system_.is_recording();
-        if (recording) {
-            logger_.log(LogLevel::INFO, "WEB_SERVER", "Background recording still active; browser session refreshed");
+        bool has_active_sessions = false;
+        {
+            std::lock_guard lock(sessions_mutex_);
+            has_active_sessions = !sessions_.empty();
+        }
+        if (recording && !has_active_sessions) {
+            bool expected = false;
+            if (recording_refresh_logged_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+                logger_.log(LogLevel::DEBUG, "WEB_SERVER", "Background recording still active; browser session refreshed");
+            }
         }
         send_all(client_socket, http_response(200, "application/json", json_response({
             {"recording", recording},
