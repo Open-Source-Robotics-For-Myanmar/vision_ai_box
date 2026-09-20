@@ -1,0 +1,106 @@
+1. Face Recognition Mode
+
+ON/Off Button To Learn Face Features
+Settings
+- Learn Multiple ON/OFF
+- Save & Return
+- Detect Threshold
+- NMS Threshold
+- Recognize Threshold
+- Load Names
+- Import From SD Card
+- Export To SD Card
+
+
+2. Object Tracking Mode
+
+Settings
+- Save & Return
+- Auto Save
+- Learn Enable
+- Multi Core
+- Frame Ratio - > control bounding box on screen
+- Frame Size - > Control Bounding Box on screen
+- Threshold
+- False Positive
+- True Positive
+- Load Names
+- Import From SD Card
+- Export To SD Card
+
+
+3. Object Recognition 
+
+Settings
+- Save & Return
+- Learn Multiple
+- Recognize Threshold
+- NMS Threshold
+- Load Names
+- Import From SD Card
+- Export To SD Card
+
+4. Line Tracking 
+
+Settings
+- Save & Return
+- Learn Multiple
+- LED Switch 
+- Load Names
+- Import From SD Card
+- Export To SD Card
+
+5. Color Recognition
+
+Settings
+- Save & Return
+- Learn Multiple
+- Start Range ( COlor range )
+- Accept Range ( Color Range )
+- Block Size Threshold
+- Load Names
+- Import From SD Card
+- Export To SD Card
+
+
+6. Tag Recognition
+
+Settings
+- Save & Return
+- Learn Multiple
+- Load Names
+- Import From SD Card
+- Export To SD Card
+
+7. Object Classification 
+
+Settings
+- Save & Return
+- Learn Multiple
+- Frame Count
+- Frame Select
+- Frame Ratio 
+- Frame Size 
+- Frame X 
+- Frame Y 
+- Threshold
+- Load Names
+- Import From SD Card
+- Export To SD Card
+
+
+8. General Settings
+
+- Save & Return
+- Protocol Type
+- Screen Brightness
+- Menu Auto Hide
+- LED Switch
+- LED Brightness
+- RGB Switch
+- RGB Brightness
+- Camera Gain Lock
+- Show FPS
+- Factory Reset 
+- Version 
+- Language
