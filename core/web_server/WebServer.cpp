@@ -585,6 +585,27 @@ void WebServer::handle_client(int client_socket)
                 send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
             }
         }
+    } else if (method == "POST" && path == "/api/plugins/unload") {
+        if (!plugin_manager_) {
+            send_all(client_socket, http_response(500, "application/json", json_response({{"error", "plugin manager unavailable"}})));
+        } else {
+            try {
+                const json payload = json::parse(body);
+                const std::string name = payload.value("name", "");
+                if (name.empty()) {
+                    send_all(client_socket, http_response(400, "application/json", json_response({{"error", "plugin name required"}})));
+                } else {
+                    const bool success = plugin_manager_->unload_plugin(name);
+                    send_all(client_socket, http_response(success ? 200 : 404, "application/json", json_response({
+                        {"success", success},
+                        {"name", name},
+                        {"plugins", plugin_manager_->get_all_plugin_info()}
+                    })));
+                }
+            } catch (const std::exception&) {
+                send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
+            }
+        }
     } else if (method == "POST" && path == "/api/plugins/settings") {
         if (!plugin_manager_) {
             send_all(client_socket, http_response(500, "application/json", json_response({{"error", "plugin manager unavailable"}})));

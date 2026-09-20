@@ -19,8 +19,6 @@ const recordStatusText = document.querySelector('#record-status-text');
 const cameraSettingsForm = document.querySelector('#camera-settings-form');
 const cancelSettingsBtn = document.querySelector('#cancel-settings-btn');
 const usbDeviceField = document.querySelector('#usb-device-field');
-const viewSystem = document.querySelector('#view-system');
-const viewPlugin = document.querySelector('#view-plugin');
 const querySearchInput = document.querySelector('#query-search');
 const queryDateFilter = document.querySelector('#query-date-filter');
 const queryTypeFilter = document.querySelector('#query-type-filter');
@@ -28,6 +26,7 @@ const queryMediaList = document.querySelector('#query-session-list');
 const pluginList = document.querySelector('#plugin-list');
 const pluginSettings = document.querySelector('#plugin-settings');
 const scanPluginsBtn = document.querySelector('#scan-plugins-btn');
+const disablePluginBtn = document.querySelector('#disable-plugin-btn');
 const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
 
 let queryMedia = [];
@@ -228,30 +227,20 @@ function showView(viewName) {
   const isVideo = viewName === 'video';
   const isQuery = viewName === 'query';
   const isOptions = viewName === 'options';
-  const isSystem = viewName === 'system';
-  const isPlugin = viewName === 'plugin';
 
   viewVideo.hidden = !isVideo;
   if (viewQuery) viewQuery.hidden = !isQuery;
   viewOptions.hidden = !isOptions;
-  if (viewSystem) viewSystem.hidden = !isSystem;
-  if (viewPlugin) viewPlugin.hidden = !isPlugin;
 
   navTabs.forEach(tab => {
     const label = tab.textContent.trim();
-    const active = label === (isVideo ? 'Video' : isQuery ? 'Query data' : isOptions ? 'Options' : isSystem ? 'System' : isPlugin ? 'Plugin' : 'Video');
+    const active = label === (isVideo ? 'Main' : isQuery ? 'Query data' : isOptions ? 'Options' : 'Main');
     tab.classList.toggle('active', active);
   });
 
   if (isQuery) {
     fetchQueryMedia().catch(error => {
       console.error('Unable to load query data', error);
-    });
-  }
-
-  if (isPlugin) {
-    refreshPluginList().catch(error => {
-      console.error('Unable to load plugin list', error);
     });
   }
 
@@ -358,21 +347,10 @@ function renderPluginList(plugins) {
     status.textContent = plugin.enabled ? 'Active' : plugin.loaded ? 'Disabled' : 'Unloaded';
     status.className = `plugin-status ${plugin.enabled ? 'active' : plugin.loaded ? 'disabled' : 'unloaded'}`;
 
-    const description = document.createElement('div');
-    description.className = 'plugin-card-description';
-    description.textContent = plugin.name === 'face_recognition'
-      ? 'Detects human faces'
-      : plugin.name.includes('depth') ? 'Monocular depth estimation' : 'YOLOv8 bounding box detection';
-    const version = document.createElement('div');
-    version.className = 'plugin-card-version';
-    version.textContent = 'v1.0.0';
-
     top.appendChild(radio);
     top.appendChild(text);
     top.appendChild(status);
     card.appendChild(top);
-    card.appendChild(version);
-    card.appendChild(description);
 
     const selectPlugin = async () => {
       try {
@@ -404,6 +382,9 @@ function renderPluginList(plugins) {
   });
 
   const activePlugin = normalizedPlugins.find(plugin => plugin.name === selectedPluginName || plugin.enabled);
+  if (disablePluginBtn) {
+    disablePluginBtn.disabled = !activePlugin || !activePlugin.enabled;
+  }
   if (activePlugin) {
     selectedPluginName = activePlugin.name;
     renderPluginSettings(activePlugin);
@@ -500,6 +481,27 @@ if (scanPluginsBtn) {
       await refreshPluginList();
     } finally {
       scanPluginsBtn.disabled = false;
+    }
+  });
+}
+
+if (disablePluginBtn) {
+  disablePluginBtn.addEventListener('click', async () => {
+    if (!selectedPluginName) return;
+    const pluginName = selectedPluginName;
+    if (!window.confirm(`Disable and unload ${pluginName}?`)) return;
+    disablePluginBtn.disabled = true;
+    try {
+      await request('/api/plugins/unload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: pluginName })
+      });
+      selectedPluginName = '';
+      await refreshPluginList();
+    } catch (error) {
+      console.error('Unable to disable plugin', error);
+      disablePluginBtn.disabled = false;
     }
   });
 }
@@ -773,11 +775,9 @@ startLiveClock();
 navTabs.forEach(tab => {
   tab.addEventListener('click', () => {
     const label = tab.textContent.trim();
-    if (label === 'Video') showView('video');
+    if (label === 'Main') showView('video');
     if (label === 'Query data') showView('query');
     if (label === 'Options') showView('options');
-    if (label === 'System') showView('system');
-    if (label === 'Plugin') showView('plugin');
   });
 });
 

@@ -27,7 +27,7 @@
     .nav-tab.active { background: var(--accent-blue); color: #fff; }
 
     /* Main Layout */
-    main { padding: 10px; max-width: 1600px; margin: 0 auto; }
+    main { padding: 8px 0 10px; max-width: 1600px; margin: 0 auto; }
 
     /* Login Form Styles */
     .login-wrapper { display: grid; place-items: center; min-height: 80vh; }
@@ -39,10 +39,10 @@
     .btn-login:hover { background: var(--accent-blue-hover); }
 
     /* Dashboard Layout Grid */
-    .dashboard-grid { display: grid; grid-template-columns: 1fr 380px; gap: 10px; align-items: stretch; }
+    .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; align-items: start; }
 
-    /* Left Column: Stream, Table & Terminal Logs */
-    .left-panel { display: flex; flex-direction: column; gap: 10px; height: 100%; }
+    /* Main camera and AI mode panels */
+    .left-panel { display: contents; }
     
     /* Video Box */
     .video-card { background: var(--panel-bg); border: 1px solid var(--panel-border); position: relative; }
@@ -108,22 +108,16 @@
     }
     .record-duration[hidden] { display: none; }
 
-    /* ANPR Table */
-    .table-container { background: var(--panel-bg); border: 1px solid var(--panel-border); height: 160px; overflow-y: auto; }
-    table.anpr-table { width: 100%; border-collapse: collapse; text-align: left; }
-    table.anpr-table th { background: #282828; color: var(--text-muted); padding: 8px 10px; font-weight: 600; border-bottom: 1px solid var(--panel-border); position: sticky; top: 0; }
-    table.anpr-table td { padding: 8px 10px; border-bottom: 1px solid #282828; }
-    table.anpr-table tr.highlight { background: rgba(30, 136, 229, 0.2); color: #fff; }
-
-    /* Log Panel - Fills Remaining Space Below Table */
+    /* System Console */
+    .right-panel { grid-column: 1 / -1; height: 220px; min-height: 0; }
     .log-panel {
       background: var(--panel-bg);
       border: 1px solid var(--panel-border);
       padding: 10px;
       display: flex;
       flex-direction: column;
-      flex: 1;
-      min-height: 180px;
+      height: 100%;
+      min-height: 0;
     }
 
     #log-terminal {
@@ -134,8 +128,8 @@
       line-height: 1.35;
       flex: 1;
       width: 100%;
-      min-height: 420px;
-      max-height: 500px;
+      min-height: 0;
+      max-height: none;
       overflow-y: auto;
       overflow-x: auto;
       padding: 8px;
@@ -172,50 +166,38 @@
     .panel-title { font-size: 12px; font-weight: bold; color: var(--text-muted); border-bottom: 1px solid #2a2a2a; padding-bottom: 6px; margin-bottom: 10px; }
 
     /* Enlarged Snapshot Area */
-    .snapshot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .snapshot-item { background: #000; border: 1px solid #333; height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; border-radius: 4px; overflow: hidden; }
-    .snapshot-item img { width: 100%; height: 100%; object-fit: cover; }
-    .snapshot-label { position: absolute; bottom: 0; width: 100%; background: rgba(0, 0, 0, 0.75); font-size: 11px; text-align: center; color: var(--text-muted); padding: 4px 0; }
-    
-    /* Plate Result Card */
-    .plate-result-box { margin-top: 10px; background: #000; border: 1px solid var(--accent-blue); padding: 8px; text-align: center; border-radius: 4px; }
-    .plate-number { font-size: 20px; font-weight: bold; letter-spacing: 2px; color: #fff; font-family: monospace; }
-
-    /* Device Info List */
-    .info-list { display: grid; gap: 6px; font-size: 11px; }
-    .info-row { display: flex; justify-content: space-between; padding: 2px 0; border-bottom: 1px dashed #2a2a2a; }
-    .info-label { color: var(--text-muted); }
-
     /* Settings Controls */
     .control-group { display: grid; grid-template-columns: 80px 1fr; align-items: center; gap: 6px; margin-bottom: 8px; }
     .control-group select, .control-group input { background: #121212; border: 1px solid var(--panel-border); color: #fff; padding: 4px; border-radius: 3px; font-size: 11px; }
 
-    .plugin-shell { max-width: 1180px; margin: 24px auto; }
-    .plugin-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--panel-border); }
+    .plugin-shell { max-width: 1180px; margin: 0; }
+    .plugin-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-bottom: 1px solid var(--panel-border); }
     .plugin-header .panel-title { margin: 0; border: 0; padding: 0; }
-    .plugin-layout { display: grid; grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.4fr); min-height: 480px; }
-    .plugin-list { padding: 12px; display: grid; align-content: start; gap: 8px; border-right: 1px solid var(--panel-border); }
-    .plugin-card { display: grid; gap: 5px; padding: 12px; background: #181818; border: 1px solid #303030; color: var(--text-main); text-align: left; cursor: pointer; }
+    .plugin-actions { display: flex; align-items: center; gap: 5px; }
+    .plugin-header .btn { padding: 4px 9px; font-size: 11px; }
+    .plugin-layout { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); height: 238px; min-height: 0; }
+    .plugin-list { min-height: 0; padding: 7px; display: grid; align-content: start; gap: 5px; border-right: 1px solid var(--panel-border); overflow-y: auto; }
+    .plugin-card { display: block; padding: 5px 7px; min-height: 32px; background: #181818; border: 1px solid #303030; color: var(--text-main); text-align: left; cursor: pointer; }
     .plugin-card:hover, .plugin-card.selected { border-color: var(--accent-blue); background: #202020; }
-    .plugin-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .plugin-card-name { display: flex; align-items: center; gap: 8px; font-weight: 700; }
-    .plugin-card-description { color: var(--text-muted); font-size: 11px; }
-    .plugin-card-version { color: #777; font-size: 10px; }
-    .plugin-status { font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .plugin-card-top { display: flex; align-items: center; justify-content: space-between; gap: 5px; min-width: 0; }
+    .plugin-card-name { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 13px; }
+    .plugin-status { flex: 0 0 auto; font-size: 10px; font-weight: 700; text-transform: uppercase; }
     .plugin-status.active { color: #00ff00; }
     .plugin-status.disabled { color: #ffb300; }
     .plugin-status.unloaded { color: #888; }
-    .plugin-settings { padding: 18px; }
-    .plugin-settings-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
-    .plugin-settings-subtitle { color: var(--text-muted); font-size: 11px; margin-bottom: 18px; }
-    .plugin-setting { display: grid; gap: 8px; padding: 14px 0; border-top: 1px solid #2a2a2a; }
-    .plugin-setting label { color: var(--text-muted); font-size: 11px; }
+    .plugin-settings { min-height: 0; padding: 10px 12px; overflow-y: auto; }
+    .plugin-settings-title { font-size: 13px; font-weight: 700; margin-bottom: 3px; }
+    .plugin-settings-subtitle { color: var(--text-muted); font-size: 10px; margin-bottom: 9px; }
+    .plugin-setting { display: grid; gap: 5px; padding: 8px 0; border-top: 1px solid #2a2a2a; }
+    .plugin-setting label { color: var(--text-muted); font-size: 10px; }
     .plugin-range-row { display: grid; grid-template-columns: 1fr 42px; gap: 10px; align-items: center; }
     .plugin-range-row input[type="range"] { accent-color: var(--accent-blue); width: 100%; }
     .plugin-range-value { color: #fff; font-family: monospace; font-size: 12px; }
     .plugin-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .plugin-empty { color: var(--text-muted); padding: 24px 12px; font-size: 12px; }
-    @media (max-width: 760px) { .plugin-layout { grid-template-columns: 1fr; } .plugin-list { border-right: 0; border-bottom: 1px solid var(--panel-border); } }
+    .plugin-empty { color: var(--text-muted); padding: 18px 8px; font-size: 11px; }
+    .main-plugin-panel { margin: 0; max-width: none; overflow: hidden; }
+    .main-plugin-panel .plugin-layout { height: 238px; min-height: 0; }
+    @media (max-width: 760px) { .dashboard-grid { grid-template-columns: 1fr; } .main-plugin-panel { grid-column: auto; } .plugin-layout { grid-template-columns: 1fr; } .plugin-list { border-right: 0; border-bottom: 1px solid var(--panel-border); } }
 
     .query-shell { max-width: 1400px; margin: 18px auto; display: grid; gap: 14px; }
     .query-filter-bar {
@@ -279,11 +261,9 @@
       <span style="color: var(--accent-blue);">■</span> DeepBlue Vision
     </div>
     <div class="nav-tabs">
-      <div class="nav-tab active">Video</div>
+      <div class="nav-tab active">Main</div>
       <div class="nav-tab">Query data</div>
       <div class="nav-tab">Options</div>
-      <div class="nav-tab">System</div>
-      <div class="nav-tab">Plugin</div>
     </div>
   </header>
 
@@ -309,7 +289,7 @@
     <div id="view-video">
       <div id="dashboard" class="dashboard-grid" hidden>
       
-        <!-- Left Column: Stream, Table & Terminal Logs -->
+        <!-- Left Column: Stream and AI mode -->
         <div class="left-panel">
           <div class="video-card">
             <div class="video-viewport">
@@ -343,105 +323,29 @@
             </div>
           </div>
 
-          <!-- Detection History Table -->
-          <div class="table-container">
-            <table class="anpr-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Plate</th>
-                  <th>Width</th>
-                  <th>White List</th>
-                  <th>Trigger</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr class="highlight">
-                  <td>2026-03-15 10:11:31</td>
-                  <td>B98C4D97</td>
-                  <td>370Pixel</td>
-                  <td>Virtual ground coil</td>
-                  <td>Other</td>
-                </tr>
-                <tr>
-                  <td>2026-03-15 10:11:25</td>
-                  <td>02710097</td>
-                  <td>195Pixel</td>
-                  <td>Virtual ground coil</td>
-                  <td>Other</td>
-                </tr>
-                <tr>
-                  <td>2026-03-15 09:45:12</td>
-                  <td>7B12345</td>
-                  <td>210Pixel</td>
-                  <td>Manual Trigger</td>
-                  <td>Allowed</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
         </div>
 
-        <!-- Right Column: Results & Hardware Settings -->
+        <div class="panel-box plugin-shell main-plugin-panel">
+          <div class="plugin-header">
+            <div class="panel-title">Choose AI Vision Mode</div>
+            <div class="plugin-actions">
+              <button id="disable-plugin-btn" class="btn btn-secondary" type="button" disabled>Disable</button>
+              <button id="scan-plugins-btn" class="btn btn-secondary" type="button">&#8635; Scan</button>
+            </div>
+          </div>
+          <div class="plugin-layout">
+            <div id="plugin-list" class="plugin-list"></div>
+            <section id="plugin-settings" class="plugin-settings" aria-live="polite">
+              <div class="plugin-empty">Select a plugin to view its settings.</div>
+            </section>
+          </div>
+        </div>
+
+        <!-- Right Column: System Console -->
         <div class="right-panel">
-          
-          <!-- Video Snapshot & Recognition Results -->
-          <div class="panel-box">
-            <div class="panel-title">Video Snapshot</div>
-            <div class="snapshot-grid">
-              <div class="snapshot-item">
-                <div style="color: #555; font-size: 11px;">[Image]</div>
-                <div class="snapshot-label">Snapshot image</div>
-              </div>
-              <div class="snapshot-item">
-                <div style="color: #555; font-size: 11px;">[Picture]</div>
-                <div class="snapshot-label">Plate picture</div>
-              </div>
-            </div>
-
-            <div class="plate-result-box">
-              <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 2px;">Recognition result</div>
-              <div class="plate-number">-- -- --</div>
-            </div>
-            <button class="btn" style="width: 100%; margin-top: 8px;">Trigger</button>
-          </div>
-
-          <!-- Camera Status Information -->
-          <div class="panel-box">
-            <div class="panel-title">Device Info</div>
-            <div class="info-list">
-              <div class="info-row"><span class="info-label">Name</span><span>MS-ANPR-01</span></div>
-              <div class="info-row"><span class="info-label">IP</span><span>172.16.1.88</span></div>
-              <div class="info-row"><span class="info-label">Time</span><span>2026-03-15 10:11:32</span></div>
-              <div class="info-row"><span class="info-label">Mode</span><span>NTP Synchronize</span></div>
-              <div class="info-row"><span class="info-label">Version</span><span>8.3.1.232303063</span></div>
-              <div class="info-row"><span class="info-label">State</span><span style="color: #00ff00;">Online</span></div>
-            </div>
-          </div>
-
-          <!-- Hardware Controls -->
-          <div class="panel-box">
-            <div class="panel-title">Hardware Controls</div>
-            <div class="control-group">
-              <label class="info-label">Getaway</label>
-              <select><option>Entrance</option><option>Exit</option></select>
-            </div>
-            <div class="control-group">
-              <label class="info-label">Direction</label>
-              <select><option>Both</option><option>Inbound</option><option>Outbound</option></select>
-            </div>
-            <div class="control-group">
-              <label class="info-label">LED</label>
-              <select><option>Manual LED</option><option>Auto Sensor</option></select>
-            </div>
-            <div style="margin-top: 8px;">
-              <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-bottom: 4px;">
-                <span>LED Param</span>
-                <span>4 meters</span>
-              </div>
-              <button class="btn btn-secondary" style="width: 100%; font-size: 10px;">Schedule Turn Off</button>
-            </div>
+          <div class="log-panel">
+            <div class="panel-title">System Console Logs</div>
+            <div id="log-terminal">Loading session logs...</div>
           </div>
 
         </div>
@@ -524,26 +428,6 @@
       </div>
     </div>
 
-    <div id="view-system" hidden>
-      <div class="panel-box" style="max-width: 1100px; margin: 24px auto; min-height: 520px; display: flex; flex-direction: column;">
-        <div class="panel-title">System Console Logs</div>
-        <div id="log-terminal" style="height: 500px; width: 100%;">Loading session logs...</div>
-      </div>
-    </div>
-    <div id="view-plugin" hidden>
-      <div class="panel-box plugin-shell">
-        <div class="plugin-header">
-          <div class="panel-title">Plugin Management</div>
-          <button id="scan-plugins-btn" class="btn btn-secondary" type="button">&#8635; Scan Plugins Folder</button>
-        </div>
-        <div class="plugin-layout">
-          <div id="plugin-list" class="plugin-list"></div>
-          <section id="plugin-settings" class="plugin-settings" aria-live="polite">
-            <div class="plugin-empty">Select a plugin to view its settings.</div>
-          </section>
-        </div>
-      </div>
-    </div>
   </main>
 
   <script src="app.js"></script>
