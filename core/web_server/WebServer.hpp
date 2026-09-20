@@ -48,10 +48,12 @@ private:
     std::shared_ptr<cv::Mat> latest_;
 };
 
+class PluginManager;
+
 class WebServer
 {
 public:
-    WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles);
+    WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles, PluginManager* plugin_manager = nullptr);
     ~WebServer();
 
     bool start(std::uint16_t port);
@@ -74,6 +76,7 @@ private:
     Logger& logger_;
     SelectedCamera& camera_;
     ServiceToggles& toggles_;
+    PluginManager* plugin_manager_;
     BaseSystem base_system_;
 
     std::atomic<bool> running_{false};

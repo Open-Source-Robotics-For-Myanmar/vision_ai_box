@@ -1,6 +1,7 @@
 #include "WebServer.hpp"
 
 #include "Logger.hpp"
+#include "PluginManager.hpp"
 
 #include <arpa/inet.h>
 #include <algorithm>
@@ -249,8 +250,8 @@ std::string content_type_for_path(const std::string& file_path)
 }
 }
 
-WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
-    : logger_(logger), camera_(camera), toggles_(toggles), base_system_(logger, camera)
+WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles, PluginManager* plugin_manager)
+    : logger_(logger), camera_(camera), toggles_(toggles), plugin_manager_(plugin_manager), base_system_(logger, camera)
 {
     camera_.register_frame_callback([this](const FrameContext& frame) {
         latest_stream_frame_.push(frame);
@@ -539,6 +540,71 @@ void WebServer::handle_client(int client_socket)
         json payload = json::array();
         for (const auto& line : lines) payload.push_back(line);
         send_all(client_socket, http_response(200, "application/json", payload.dump()));
+    } else if (method == "GET" && path == "/api/plugins") {
+        if (!plugin_manager_) {
+            send_all(client_socket, http_response(500, "application/json", json_response({{"error", "plugin manager unavailable"}})));
+        } else {
+            const json plugins = plugin_manager_->get_all_plugin_info();
+            send_all(client_socket, http_response(200, "application/json", plugins.dump()));
+        }
+    } else if (method == "POST" && path == "/api/plugins/scan") {
+        if (!plugin_manager_) {
+            send_all(client_socket, http_response(500, "application/json", json_response({{"error", "plugin manager unavailable"}})));
+        } else {
+            plugin_manager_->scan_plugins();
+            send_all(client_socket, http_response(200, "application/json", json_response({
+                {"success", true},
+                {"plugins", plugin_manager_->get_all_plugin_info()}
+            })));
+        }
+    } else if (method == "POST" && path == "/api/plugins") {
+        if (!plugin_manager_) {
+            send_all(client_socket, http_response(500, "application/json", json_response({{"error", "plugin manager unavailable"}})));
+        } else {
+            try {
+                const json payload = json::parse(body);
+                const std::string name = payload.value("name", "");
+                if (name.empty()) {
+                    send_all(client_socket, http_response(400, "application/json", json_response({{"error", "plugin name required"}})));
+                    return;
+                }
+
+                const bool enabled = payload.value("enabled", false);
+                const bool loaded = plugin_manager_->load_plugin_by_name(name);
+                const bool success = loaded && (enabled
+                    ? plugin_manager_->select_plugin(name)
+                    : plugin_manager_->set_plugin_enabled(name, false));
+                const json plugin_info = plugin_manager_->get_all_plugin_info();
+                send_all(client_socket, http_response(success ? 200 : 404, "application/json", json_response({
+                    {"success", success},
+                    {"name", name},
+                    {"enabled", enabled},
+                    {"plugins", plugin_info}
+                })));
+            } catch (const std::exception&) {
+                send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
+            }
+        }
+    } else if (method == "POST" && path == "/api/plugins/settings") {
+        if (!plugin_manager_) {
+            send_all(client_socket, http_response(500, "application/json", json_response({{"error", "plugin manager unavailable"}})));
+        } else {
+            try {
+                const json payload = json::parse(body);
+                const std::string name = payload.value("name", "");
+                if (name.empty() || !payload.contains("settings")) {
+                    send_all(client_socket, http_response(400, "application/json", json_response({{"error", "plugin name and settings required"}})));
+                } else {
+                    plugin_manager_->update_plugin_settings(name, payload.at("settings"));
+                    send_all(client_socket, http_response(200, "application/json", json_response({
+                        {"success", true},
+                        {"plugins", plugin_manager_->get_all_plugin_info()}
+                    })));
+                }
+            } catch (const std::exception&) {
+                send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
+            }
+        }
     } else if (method == "GET" && path == "/api/query/media") {
         const std::string raw_query = target.find('?') == std::string::npos ? "" : target.substr(target.find('?') + 1);
         const std::string request_path = query_param(raw_query, "path");

@@ -20,14 +20,19 @@ const cameraSettingsForm = document.querySelector('#camera-settings-form');
 const cancelSettingsBtn = document.querySelector('#cancel-settings-btn');
 const usbDeviceField = document.querySelector('#usb-device-field');
 const viewSystem = document.querySelector('#view-system');
+const viewPlugin = document.querySelector('#view-plugin');
 const querySearchInput = document.querySelector('#query-search');
 const queryDateFilter = document.querySelector('#query-date-filter');
 const queryTypeFilter = document.querySelector('#query-type-filter');
 const queryMediaList = document.querySelector('#query-session-list');
+const pluginList = document.querySelector('#plugin-list');
+const pluginSettings = document.querySelector('#plugin-settings');
+const scanPluginsBtn = document.querySelector('#scan-plugins-btn');
 const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
 
 let queryMedia = [];
 let expandedGroupIds = new Set();
+let selectedPluginName = '';
 
 let toggleRequestActive = false;
 let streamActive = false;
@@ -224,21 +229,29 @@ function showView(viewName) {
   const isQuery = viewName === 'query';
   const isOptions = viewName === 'options';
   const isSystem = viewName === 'system';
+  const isPlugin = viewName === 'plugin';
 
   viewVideo.hidden = !isVideo;
   if (viewQuery) viewQuery.hidden = !isQuery;
   viewOptions.hidden = !isOptions;
   if (viewSystem) viewSystem.hidden = !isSystem;
+  if (viewPlugin) viewPlugin.hidden = !isPlugin;
 
   navTabs.forEach(tab => {
     const label = tab.textContent.trim();
-    const active = label === (isVideo ? 'Video' : isQuery ? 'Query data' : isOptions ? 'Options' : isSystem ? 'System' : 'Video');
+    const active = label === (isVideo ? 'Video' : isQuery ? 'Query data' : isOptions ? 'Options' : isSystem ? 'System' : isPlugin ? 'Plugin' : 'Video');
     tab.classList.toggle('active', active);
   });
 
   if (isQuery) {
     fetchQueryMedia().catch(error => {
       console.error('Unable to load query data', error);
+    });
+  }
+
+  if (isPlugin) {
+    refreshPluginList().catch(error => {
+      console.error('Unable to load plugin list', error);
     });
   }
 
@@ -303,6 +316,192 @@ function getFileExtensionName(fileName) {
   if (lower.endsWith('.mp4') || lower.endsWith('.avi') || lower.endsWith('.mov') || lower.endsWith('.mkv')) return '🎬';
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.webp') || lower.endsWith('.bmp')) return '🖼️';
   return '📄';
+}
+
+function renderPluginList(plugins) {
+  if (!pluginList) return;
+
+  pluginList.innerHTML = '';
+  const normalizedPlugins = Array.isArray(plugins) ? plugins : [];
+
+  if (!normalizedPlugins.length) {
+    pluginList.innerHTML = '<div class="query-empty-state">No plugins detected.</div>';
+    return;
+  }
+
+  normalizedPlugins.forEach((plugin) => {
+    const card = document.createElement('div');
+    card.className = 'plugin-card';
+    card.classList.toggle('selected', plugin.name === selectedPluginName || Boolean(plugin.enabled));
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'pluginSelection';
+    radio.value = plugin.name || '';
+    radio.checked = Boolean(plugin.enabled);
+
+    const text = document.createElement('span');
+    text.textContent = plugin.name || 'Unknown plugin';
+    text.className = 'plugin-card-name';
+
+    const icon = document.createElement('span');
+    icon.textContent = plugin.name === 'face_recognition' ? '👤' : plugin.name.includes('depth') ? '📐' : '📦';
+    text.prepend(icon);
+
+    const top = document.createElement('div');
+    top.className = 'plugin-card-top';
+
+    const settings = plugin.settings || {};
+    const status = document.createElement('span');
+    status.textContent = plugin.enabled ? 'Active' : plugin.loaded ? 'Disabled' : 'Unloaded';
+    status.className = `plugin-status ${plugin.enabled ? 'active' : plugin.loaded ? 'disabled' : 'unloaded'}`;
+
+    const description = document.createElement('div');
+    description.className = 'plugin-card-description';
+    description.textContent = plugin.name === 'face_recognition'
+      ? 'Detects human faces'
+      : plugin.name.includes('depth') ? 'Monocular depth estimation' : 'YOLOv8 bounding box detection';
+    const version = document.createElement('div');
+    version.className = 'plugin-card-version';
+    version.textContent = 'v1.0.0';
+
+    top.appendChild(radio);
+    top.appendChild(text);
+    top.appendChild(status);
+    card.appendChild(top);
+    card.appendChild(version);
+    card.appendChild(description);
+
+    const selectPlugin = async () => {
+      try {
+        await request('/api/plugins', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: plugin.name, enabled: true })
+        });
+        selectedPluginName = plugin.name;
+        await refreshPluginList();
+      } catch (error) {
+        console.error('Unable to select plugin', error);
+      }
+    };
+    radio.addEventListener('change', () => {
+      if (radio.checked) selectPlugin();
+    });
+    card.addEventListener('click', (event) => {
+      if (event.target !== radio) selectPlugin();
+    });
+    card.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        selectPlugin();
+      }
+    });
+
+    pluginList.appendChild(card);
+  });
+
+  const activePlugin = normalizedPlugins.find(plugin => plugin.name === selectedPluginName || plugin.enabled);
+  if (activePlugin) {
+    selectedPluginName = activePlugin.name;
+    renderPluginSettings(activePlugin);
+  }
+}
+
+function renderPluginSettings(plugin) {
+  if (!pluginSettings) return;
+  const settings = plugin.settings || {};
+  pluginSettings.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.className = 'plugin-settings-title';
+  title.textContent = `Configuration: ${plugin.name}`;
+  const subtitle = document.createElement('div');
+  subtitle.className = 'plugin-settings-subtitle';
+  subtitle.textContent = plugin.loaded ? 'Runtime configuration' : 'Select this plugin to load it at runtime';
+  pluginSettings.appendChild(title);
+  pluginSettings.appendChild(subtitle);
+
+  const threshold = document.createElement('div');
+  threshold.className = 'plugin-setting';
+  const thresholdLabel = document.createElement('label');
+  thresholdLabel.textContent = 'Confidence Threshold';
+  const rangeRow = document.createElement('div');
+  rangeRow.className = 'plugin-range-row';
+  const range = document.createElement('input');
+  range.type = 'range';
+  range.min = '0';
+  range.max = '1';
+  range.step = '0.01';
+  range.value = settings.confidence_threshold ?? '0.75';
+  const rangeValue = document.createElement('span');
+  rangeValue.className = 'plugin-range-value';
+  rangeValue.textContent = Number(range.value).toFixed(2);
+  range.addEventListener('input', () => { rangeValue.textContent = Number(range.value).toFixed(2); });
+  rangeRow.appendChild(range);
+  rangeRow.appendChild(rangeValue);
+  threshold.appendChild(thresholdLabel);
+  threshold.appendChild(rangeRow);
+  pluginSettings.appendChild(threshold);
+
+  const labels = document.createElement('div');
+  labels.className = 'plugin-setting plugin-toggle';
+  const labelsText = document.createElement('label');
+  labelsText.textContent = 'Show Labels on Stream';
+  const labelsToggle = document.createElement('input');
+  labelsToggle.type = 'checkbox';
+  labelsToggle.checked = settings.show_labels ?? true;
+  labels.appendChild(labelsText);
+  labels.appendChild(labelsToggle);
+  pluginSettings.appendChild(labels);
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'btn';
+  save.textContent = 'Save Settings';
+  save.disabled = !plugin.loaded;
+  save.addEventListener('click', async () => {
+    try {
+      await request('/api/plugins/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: plugin.name, settings: {
+          ...settings,
+          confidence_threshold: Number(range.value),
+          show_labels: labelsToggle.checked
+        }})
+      });
+      await refreshPluginList();
+    } catch (error) {
+      console.error('Unable to save plugin settings', error);
+    }
+  });
+  pluginSettings.appendChild(save);
+}
+
+async function refreshPluginList() {
+  try {
+    const plugins = await request('/api/plugins');
+    renderPluginList(plugins);
+  } catch (error) {
+    if (pluginList) {
+      pluginList.innerHTML = '<div class="query-empty-state">Unable to load plugin list.</div>';
+    }
+  }
+}
+
+if (scanPluginsBtn) {
+  scanPluginsBtn.addEventListener('click', async () => {
+    scanPluginsBtn.disabled = true;
+    try {
+      await request('/api/plugins/scan', { method: 'POST' });
+      await refreshPluginList();
+    } finally {
+      scanPluginsBtn.disabled = false;
+    }
+  });
 }
 
 function renderQueryTree(node, depth = 0) {
@@ -578,6 +777,7 @@ navTabs.forEach(tab => {
     if (label === 'Query data') showView('query');
     if (label === 'Options') showView('options');
     if (label === 'System') showView('system');
+    if (label === 'Plugin') showView('plugin');
   });
 });
 
@@ -635,6 +835,7 @@ if (window.location.pathname === '/dashboard') {
   refreshStatus().catch(error => { cameraStatus.textContent = error.message; });
 
   fetchSessionLogs();
+  refreshPluginList().catch(() => {});
   setInterval(fetchSessionLogs, 1000);
   setInterval(refreshStatus, 2000);
 }

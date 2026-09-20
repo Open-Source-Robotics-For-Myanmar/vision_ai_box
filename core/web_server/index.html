@@ -190,6 +190,33 @@
     .control-group { display: grid; grid-template-columns: 80px 1fr; align-items: center; gap: 6px; margin-bottom: 8px; }
     .control-group select, .control-group input { background: #121212; border: 1px solid var(--panel-border); color: #fff; padding: 4px; border-radius: 3px; font-size: 11px; }
 
+    .plugin-shell { max-width: 1180px; margin: 24px auto; }
+    .plugin-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--panel-border); }
+    .plugin-header .panel-title { margin: 0; border: 0; padding: 0; }
+    .plugin-layout { display: grid; grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.4fr); min-height: 480px; }
+    .plugin-list { padding: 12px; display: grid; align-content: start; gap: 8px; border-right: 1px solid var(--panel-border); }
+    .plugin-card { display: grid; gap: 5px; padding: 12px; background: #181818; border: 1px solid #303030; color: var(--text-main); text-align: left; cursor: pointer; }
+    .plugin-card:hover, .plugin-card.selected { border-color: var(--accent-blue); background: #202020; }
+    .plugin-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .plugin-card-name { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+    .plugin-card-description { color: var(--text-muted); font-size: 11px; }
+    .plugin-card-version { color: #777; font-size: 10px; }
+    .plugin-status { font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .plugin-status.active { color: #00ff00; }
+    .plugin-status.disabled { color: #ffb300; }
+    .plugin-status.unloaded { color: #888; }
+    .plugin-settings { padding: 18px; }
+    .plugin-settings-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+    .plugin-settings-subtitle { color: var(--text-muted); font-size: 11px; margin-bottom: 18px; }
+    .plugin-setting { display: grid; gap: 8px; padding: 14px 0; border-top: 1px solid #2a2a2a; }
+    .plugin-setting label { color: var(--text-muted); font-size: 11px; }
+    .plugin-range-row { display: grid; grid-template-columns: 1fr 42px; gap: 10px; align-items: center; }
+    .plugin-range-row input[type="range"] { accent-color: var(--accent-blue); width: 100%; }
+    .plugin-range-value { color: #fff; font-family: monospace; font-size: 12px; }
+    .plugin-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .plugin-empty { color: var(--text-muted); padding: 24px 12px; font-size: 12px; }
+    @media (max-width: 760px) { .plugin-layout { grid-template-columns: 1fr; } .plugin-list { border-right: 0; border-bottom: 1px solid var(--panel-border); } }
+
     .query-shell { max-width: 1400px; margin: 18px auto; display: grid; gap: 14px; }
     .query-filter-bar {
       background: var(--panel-bg); border: 1px solid var(--panel-border); padding: 12px;
@@ -256,6 +283,7 @@
       <div class="nav-tab">Query data</div>
       <div class="nav-tab">Options</div>
       <div class="nav-tab">System</div>
+      <div class="nav-tab">Plugin</div>
     </div>
   </header>
 
@@ -500,6 +528,20 @@
       <div class="panel-box" style="max-width: 1100px; margin: 24px auto; min-height: 520px; display: flex; flex-direction: column;">
         <div class="panel-title">System Console Logs</div>
         <div id="log-terminal" style="height: 500px; width: 100%;">Loading session logs...</div>
+      </div>
+    </div>
+    <div id="view-plugin" hidden>
+      <div class="panel-box plugin-shell">
+        <div class="plugin-header">
+          <div class="panel-title">Plugin Management</div>
+          <button id="scan-plugins-btn" class="btn btn-secondary" type="button">&#8635; Scan Plugins Folder</button>
+        </div>
+        <div class="plugin-layout">
+          <div id="plugin-list" class="plugin-list"></div>
+          <section id="plugin-settings" class="plugin-settings" aria-live="polite">
+            <div class="plugin-empty">Select a plugin to view its settings.</div>
+          </section>
+        </div>
       </div>
     </div>
   </main>

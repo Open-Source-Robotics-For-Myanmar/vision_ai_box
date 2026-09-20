@@ -119,9 +119,17 @@ int main()
 
     // Plugins Loading
     PluginManager plugin_manager(logger);
-    const std::filesystem::path plugin_dir = "bin/plugins";
+    std::filesystem::path plugin_dir = std::filesystem::current_path() / "bin/plugins";
+    std::error_code path_error;
+    const std::filesystem::path executable_path = std::filesystem::read_symlink("/proc/self/exe", path_error);
+    if (!path_error) {
+        const std::filesystem::path executable_plugin_dir = executable_path.parent_path() / "plugins";
+        if (std::filesystem::exists(executable_plugin_dir)) {
+            plugin_dir = executable_plugin_dir;
+        }
+    }
     if (std::filesystem::exists(plugin_dir)) {
-        plugin_manager.load_all_plugins(plugin_dir);
+        plugin_manager.discover_plugins(plugin_dir);
     } else {
         logger.log(LogLevel::WARN, "PLUGIN_MGR", "Plugin directory not found: " + plugin_dir.string());
     }
@@ -141,7 +149,7 @@ int main()
         }
     }
 
-    WebServer web_server(logger, camera, toggles);
+    WebServer web_server(logger, camera, toggles, &plugin_manager);
     if (!web_server.start(web_port)) {
         logger.log(LogLevel::ERROR, "WEB_SERVER", "Web server failed to start");
         camera.stop();

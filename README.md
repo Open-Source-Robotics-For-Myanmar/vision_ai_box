@@ -31,7 +31,7 @@ Build and run USB mode:
 ```sh
 cmake -S . -B build-usb -DCMAKE_BUILD_TYPE=Release -DCAMERA=USB
 cmake --build build-usb -j"$(nproc)"
-./build-usb/vision_ai_box
+./build-usb/bin/vision_ai_box
 ```
 
 
@@ -41,7 +41,7 @@ Build and run RealSense mode:
 cmake -S . -B build-realsense -DCMAKE_BUILD_TYPE=Release \
   -DCAMERA=REALSENSE -DLIBREALSENSE_DIR=/home/ghost/librealsense
 cmake --build build-realsense -j"$(nproc)"
-./build-realsense/vision_ai_box
+./build-realsense/bin/vision_ai_box
 ```
 
 ```
@@ -58,7 +58,12 @@ The embedded web server listens on port `8080` by default. Set
 Open `http://<device-ip>:8080/` from a device on the same network. The login
 creates an HttpOnly session cookie and redirects to `/dashboard`. Protected
 endpoints include `/api/camera/status`, `/api/camera/start`,
-`/api/camera/stop`, and `/api/camera/stream`.
+`/api/camera/stop`, `/api/camera/stream`, and `/api/plugins`.
+
+Plugin libraries are discovered at application startup but are not loaded. The
+Plugin page lists available libraries with no active selection. Selecting a
+plugin calls `POST /api/plugins`, which loads that library at runtime and makes
+it the active plugin. Only the selected plugin receives frames.
 
 ## Implementation
 
