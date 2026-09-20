@@ -2,6 +2,7 @@
 #include "Toggles.hpp"
 #include "Logger.hpp"
 #include "WebServer.hpp"
+#include "PluginManager.hpp"
 
 #ifdef CAMERA_USB
 #include "UsbCamera.hpp"
@@ -13,7 +14,10 @@
 #include <csignal>
 #include <cstdlib>
 #include <stdexcept>
+#include <iostream>
 #include <thread>
+#include <filesystem>
+
 
 namespace
 {
@@ -25,6 +29,7 @@ void handle_signal(int)
         active_toggles->request_shutdown();
     }
 }
+
 
 void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
 {
@@ -112,6 +117,20 @@ int main()
 
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box starting up");
 
+    // Plugins Loading
+    PluginManager plugin_manager(logger);
+    const std::filesystem::path plugin_dir = "bin/plugins";
+    if (std::filesystem::exists(plugin_dir)) {
+        plugin_manager.load_all_plugins(plugin_dir);
+    } else {
+        logger.log(LogLevel::WARN, "PLUGIN_MGR", "Plugin directory not found: " + plugin_dir.string());
+    }
+
+    camera.register_frame_callback([&plugin_manager](const FrameContext& frame) {
+        plugin_manager.process_frame(frame);
+    });
+
+    // Start the web server
     std::uint16_t web_port = 8080;
     if (const char* configured_port = std::getenv("VISION_AI_BOX_PORT")) {
         try {
@@ -131,6 +150,7 @@ int main()
 
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box is ready at http://<device-ip>:" + std::to_string(web_port));
 
+    // Start the camera and monitor its state
     if (camera.check_device_state()) {
         if (camera.start()) {
             toggles.camera_error = false;
