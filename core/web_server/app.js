@@ -138,12 +138,21 @@ async function refreshStatus() {
   const running = Boolean(status.running);
   const error = Boolean(status.error);
   const actualFps = Number(status.fps || 0);
+  const streamFps = Number(status.stream_fps || 0);
+  const streamClients = Number(status.stream_clients || 0);
+  const streamProfile = String(status.stream_profile || 'idle');
 
   cameraToggle.checked = enabled;
 
   if (cameraFpsIndicator) {
     if (running && Number.isFinite(actualFps) && actualFps > 0) {
-      cameraFpsIndicator.textContent = `FPS ${actualFps.toFixed(1)}`;
+      // Capture rate and delivered rate diverge whenever the stream adapts, so
+      // showing only the former hides what the browser is really receiving.
+      const parts = [`CAM ${actualFps.toFixed(1)}`];
+      if (streamClients > 0 && Number.isFinite(streamFps)) {
+        parts.push(`STREAM ${streamFps.toFixed(1)} (${streamProfile})`);
+      }
+      cameraFpsIndicator.textContent = `FPS ${parts.join(' | ')}`;
       cameraFpsIndicator.hidden = false;
     } else {
       cameraFpsIndicator.textContent = 'FPS 0.0';
