@@ -84,8 +84,9 @@ class PluginManager;
 struct StreamClientStats
 {
     std::atomic<double> delivered_fps{0.0};
-    std::atomic<int> profile_level{2};
-    std::atomic<int> jpeg_quality{65};
+    std::atomic<int> frame_width{0};
+    std::atomic<int> frame_height{0};
+    std::atomic<int> jpeg_quality{0};
     std::atomic<std::uint64_t> frames_skipped{0};
     // Steady-clock nanoseconds of the last delivered frame. A client that
     // stalls stops publishing, so the reader needs this to decay the rate
@@ -97,7 +98,8 @@ struct StreamSummary
 {
     int clients{0};
     double delivered_fps{0.0};
-    int profile_level{-1};
+    int frame_width{0};
+    int frame_height{0};
     int jpeg_quality{0};
     std::uint64_t frames_skipped{0};
 };
