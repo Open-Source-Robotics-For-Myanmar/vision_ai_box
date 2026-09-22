@@ -126,6 +126,8 @@ bool PluginManager::unload_plugin(const std::string& plugin_name)
         }
     }
 
+    // Otherwise the browser keeps drawing boxes from a plugin that is gone.
+    clear_result();
     logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Plugin unloaded: " + plugin_name);
     removed.reset();
     return true;
@@ -155,6 +157,7 @@ bool PluginManager::unload_all_plugins()
         instance.reset();
     }
 
+    clear_result();
     logger_.log(LogLevel::INFO, "PLUGIN_MGR", "All plugins unloaded");
     return true;
 }
@@ -209,12 +212,52 @@ void PluginManager::processing_loop()
 
 void PluginManager::process_frame_now(const FrameContext& frame)
 {
-    std::lock_guard lock(mutex_);
-    for (const auto& [name, instance] : plugins_) {
-        if (instance && instance->plugin && instance->state == PluginState::Active) {
-            instance->plugin->process(frame);
+    // Take a reference to the active plugin, then release the registry lock
+    // before running inference. Holding it across process() would block every
+    // other plugin call -- including the web UI reading plugin state -- for
+    // the full duration of a detector pass. The shared_ptr keeps the instance
+    // alive if it is unloaded mid-frame, so dlclose waits for us to finish.
+    std::shared_ptr<PluginInstance> active;
+    std::string active_name;
+    {
+        std::lock_guard lock(mutex_);
+        auto it = plugins_.find(active_plugin_name_);
+        if (it != plugins_.end() && it->second && it->second->state == PluginState::Active) {
+            active = it->second;
+            active_name = active_plugin_name_;
         }
     }
+
+    if (!active || !active->plugin) {
+        return;
+    }
+
+    PluginResult result = active->plugin->process(frame);
+    // The plugin only has to fill in detections; the frame it was given and
+    // its own identity are known here.
+    result.sequence = frame.sequence;
+    result.plugin = active_name;
+
+    std::lock_guard lock(result_mutex_);
+    latest_result_ = std::move(result);
+    has_result_ = true;
+}
+
+bool PluginManager::latest_result(PluginResult& result) const
+{
+    std::lock_guard lock(result_mutex_);
+    if (!has_result_) {
+        return false;
+    }
+    result = latest_result_;
+    return true;
+}
+
+void PluginManager::clear_result()
+{
+    std::lock_guard lock(result_mutex_);
+    latest_result_ = {};
+    has_result_ = false;
 }
 
 void PluginManager::update_plugin_settings(const std::string& name, const nlohmann::json& config)
@@ -265,6 +308,10 @@ bool PluginManager::select_plugin(const std::string& name)
         }
         active_plugin_name_ = name;
     }
+
+    // Drop the outgoing plugin's detections so they do not briefly appear to
+    // belong to the newly selected one.
+    clear_result();
     return true;
 }
 

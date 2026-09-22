@@ -839,6 +839,45 @@ void WebServer::handle_client(int client_socket)
                 send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
             }
         }
+    } else if (method == "GET" && path == "/api/plugins/events") {
+        // Detections travel on their own channel rather than being drawn into
+        // the JPEG: that keeps inference rate and stream rate independent, and
+        // keeps the overlay crisp when the ladder degrades the video.
+        const std::string header =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n"
+            "X-Accel-Buffering: no\r\n\r\n";
+        if (send_all(client_socket, header)) {
+            std::uint64_t last_sent_sequence = 0;
+            bool sent_any = false;
+            auto last_activity = std::chrono::steady_clock::now();
+            while (running_) {
+                PluginResult result;
+                const bool have_result = plugin_manager_ && plugin_manager_->latest_result(result);
+                const auto now = std::chrono::steady_clock::now();
+
+                if (have_result && (!sent_any || result.sequence != last_sent_sequence)) {
+                    last_sent_sequence = result.sequence;
+                    sent_any = true;
+                    const json payload = result;
+                    if (!send_all(client_socket, "data: " + payload.dump() + "\n\n")) {
+                        break;
+                    }
+                    last_activity = now;
+                } else if (now - last_activity >= std::chrono::seconds(15)) {
+                    // A comment frame keeps the idle connection from being
+                    // dropped while no plugin is producing anything.
+                    if (!send_all(client_socket, ": keep-alive\n\n")) {
+                        break;
+                    }
+                    last_activity = now;
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(33));
+            }
+        }
     } else if (method == "POST" && path == "/api/plugins/settings") {
         if (!plugin_manager_) {
             send_all(client_socket, http_response(500, "application/json", json_response({{"error", "plugin manager unavailable"}})));

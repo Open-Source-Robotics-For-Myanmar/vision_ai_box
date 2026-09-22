@@ -37,6 +37,7 @@ public:
     void scan_plugins();
 
     void process_frame(const FrameContext& frame);
+    bool latest_result(PluginResult& result) const;
     void update_plugin_settings(const std::string& name, const nlohmann::json& config);
     nlohmann::json get_all_plugin_info() const;
     bool set_plugin_enabled(const std::string& name, bool enabled);
@@ -45,6 +46,7 @@ public:
 private:
     void processing_loop();
     void process_frame_now(const FrameContext& frame);
+    void clear_result();
 
     Logger& logger_;
     mutable std::mutex mutex_;
@@ -53,6 +55,12 @@ private:
     std::unordered_map<std::string, std::filesystem::path> plugin_paths_;
     std::string active_plugin_name_;
     std::filesystem::path plugin_directory_;
-    FrameQueue frame_queue_{2};
+    // Capacity one: the detector should always get the freshest frame
+    // available rather than one that was already stale before inference began.
+    FrameQueue frame_queue_{1};
     std::thread processing_thread_;
+
+    mutable std::mutex result_mutex_;
+    PluginResult latest_result_;
+    bool has_result_{false};
 };

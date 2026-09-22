@@ -34,10 +34,31 @@ public:
         }
     }
 
-    void process(const FrameContext& frame) override {
+    // Emits one box that drifts across the view. It detects nothing real; it
+    // exists so the whole result path -- plugin to manager to SSE to canvas --
+    // can be verified without a model, and as a worked example of the
+    // normalised coordinate contract in PluginResult.hpp.
+    PluginResult process(const FrameContext& frame) override {
+        PluginResult result;
         if (!enabled_.load() || !frame.color || frame.color->empty()) {
-            return;
+            return result;
         }
+
+        const float phase = static_cast<float>(frame.sequence % 240) / 240.0f;
+        const float width = 0.25f;
+        const float height = 0.35f;
+
+        Detection detection;
+        detection.x = phase * (1.0f - width);
+        detection.y = 0.30f;
+        detection.width = width;
+        detection.height = height;
+        detection.confidence = 0.75f;
+        detection.class_id = 0;
+        detection.label = "example";
+        result.detections.push_back(std::move(detection));
+
+        return result;
     }
 
     void update_settings(const nlohmann::json& config) override {
