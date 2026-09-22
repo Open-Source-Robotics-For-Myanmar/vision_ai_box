@@ -34,17 +34,16 @@ public:
     bool stop_recording();
     bool restart_recording();
     bool capture_frame();
-    void on_frame_received(const FrameContext& frame);
     bool is_recording() const noexcept;
     std::uint64_t get_elapsed_seconds() const;
     std::string current_recording_file() const;
     nlohmann::json discover_media_library() const;
 
 private:
+    void on_frame_received(const FrameContext& frame);
     void open_writer_if_needed(const cv::Mat& frame);
     void close_writer();
     void recording_loop();
-    static std::string make_timestamp();
     static std::string make_recording_stamp();
     static int resolve_fourcc();
     static bool try_open_writer(cv::VideoWriter& writer, const std::string& file_path, const cv::Size& frame_size);

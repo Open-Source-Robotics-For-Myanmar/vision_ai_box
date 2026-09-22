@@ -40,7 +40,6 @@ private:
     bool open_device();
     void configure();
     bool verify_frame();
-    bool start_worker();
     void acquisition_loop();
     void update_measured_fps();
 

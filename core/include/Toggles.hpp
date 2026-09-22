@@ -96,14 +96,6 @@ struct ServiceToggles
         return request_transition(SystemState::BOOT);
     }
 
-    bool request_recording_start() noexcept
-    {
-        if (state.load(std::memory_order_acquire) == SystemState::SHUTDOWN) {
-            return false;
-        }
-        return request_transition(SystemState::RECORDING);
-    }
-
     bool request_shutdown() noexcept
     {
         if (state.load(std::memory_order_acquire) == SystemState::SHUTDOWN) {

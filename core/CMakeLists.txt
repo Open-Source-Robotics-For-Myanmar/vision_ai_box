@@ -53,20 +53,11 @@ find_package(OpenCV REQUIRED COMPONENTS
     core
     imgproc
     imgcodecs
-    dnn
-    calib3d
     videoio
 )
 
 find_package(nlohmann_json REQUIRED)
 find_package(Threads REQUIRED)
-find_package(PkgConfig REQUIRED)
-
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-    libavcodec
-    libavutil
-    libswscale
-)
 
 
 
@@ -148,7 +139,6 @@ target_link_libraries(vision_ai_box
     PRIVATE
     ${OpenCV_LIBS}
     nlohmann_json::nlohmann_json
-    PkgConfig::FFMPEG
     Threads::Threads
     ${CMAKE_DL_LIBS}    # <-- Dynamic Loader Library (libdl) Link လုပ်ထားသည်
 )
@@ -167,3 +157,20 @@ target_compile_options(vision_ai_box
     PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra>
 )
+
+if(VISION_OPTIMIZE_SIZE)
+    # Section splitting is what makes --gc-sections useful: without it the
+    # linker can only discard whole object files, not individual functions.
+    # ENABLE_EXPORTS above implies -rdynamic, which keeps every symbol the
+    # plugins might resolve against, so collection is limited to internals.
+    target_compile_options(vision_ai_box PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Os -ffunction-sections -fdata-sections>
+    )
+    target_link_options(vision_ai_box PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wl,--gc-sections -Wl,--as-needed>
+    )
+    # -s drops .symtab only; .dynsym stays, so plugin symbol resolution works.
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+        target_link_options(vision_ai_box PRIVATE $<$<CXX_COMPILER_ID:GNU,Clang>:-s>)
+    endif()
+endif()

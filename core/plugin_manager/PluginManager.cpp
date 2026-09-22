@@ -159,23 +159,6 @@ bool PluginManager::unload_all_plugins()
     return true;
 }
 
-void PluginManager::load_all_plugins(const std::filesystem::path& plugins_directory)
-{
-    discover_plugins(plugins_directory);
-
-    std::vector<std::filesystem::path> plugin_paths;
-    {
-        std::lock_guard lock(mutex_);
-        for (const auto& [name, path] : plugin_paths_) {
-            plugin_paths.push_back(path);
-        }
-    }
-
-    for (const auto& plugin_path : plugin_paths) {
-        load_plugin(plugin_path);
-    }
-}
-
 void PluginManager::discover_plugins(const std::filesystem::path& plugins_directory)
 {
     if (!std::filesystem::exists(plugins_directory) || !std::filesystem::is_directory(plugins_directory)) {
