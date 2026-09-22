@@ -99,11 +99,6 @@ bool UsbCamera::start()
     return true;
 }
 
-bool UsbCamera::start_worker()
-{
-    return true;
-}
-
 void UsbCamera::stop() noexcept
 {
     std::lock_guard lock(lifecycle_mutex_);

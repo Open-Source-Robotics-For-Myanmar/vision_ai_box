@@ -42,7 +42,6 @@ private:
     void configure_alignment();
     void apply_sensor_defaults(rs2::sensor& sensor);
     void configure_sensor_defaults(const rs2::device& device);
-    bool start_worker();
     void acquisition_loop();
     void update_measured_fps();
 

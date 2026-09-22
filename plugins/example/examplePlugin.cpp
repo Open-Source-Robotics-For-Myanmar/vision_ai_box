@@ -38,11 +38,6 @@ public:
         if (!enabled_.load() || !frame.color || frame.color->empty()) {
             return;
         }
-
-        if (logger_) {
-            logger_->log(LogLevel::DEBUG, "EXAMPLE_PLUGIN",
-                         "Processing frame sequence " + std::to_string(frame.sequence));
-        }
     }
 
     void update_settings(const nlohmann::json& config) override {

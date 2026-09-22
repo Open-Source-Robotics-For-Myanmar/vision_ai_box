@@ -35,7 +35,6 @@ public:
     bool unload_all_plugins();
     void discover_plugins(const std::filesystem::path& plugins_directory);
     void scan_plugins();
-    void load_all_plugins(const std::filesystem::path& plugins_directory);
 
     void process_frame(const FrameContext& frame);
     void update_plugin_settings(const std::string& name, const nlohmann::json& config);

@@ -47,16 +47,11 @@ public:
         return true;
     }
 
-    void pop()
+    void clear()
     {
         std::lock_guard lock(mutex_);
         latest_.reset();
         latest_sequence_ = 0;
-    }
-
-    void clear()
-    {
-        pop();
     }
 
     void start()

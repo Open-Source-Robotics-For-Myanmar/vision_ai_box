@@ -403,8 +403,3 @@ bool BaseSystem::try_open_writer(cv::VideoWriter& writer, const std::string& fil
     return false;
 }
 
-std::string BaseSystem::make_timestamp()
-{
-    return make_recording_stamp();
-}
-

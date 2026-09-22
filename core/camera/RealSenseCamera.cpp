@@ -130,11 +130,6 @@ bool RealSenseCamera::start()
     return true;
 }
 
-bool RealSenseCamera::start_worker()
-{
-    return true;
-}
-
 void RealSenseCamera::stop() noexcept
 {
     std::lock_guard lock(lifecycle_mutex_);
