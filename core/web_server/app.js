@@ -8,6 +8,7 @@ const cameraToggle = document.querySelector('#camera-toggle');
 const cameraStatus = document.querySelector('#camera-status');
 const cameraFpsIndicator = document.querySelector('#camera-fps-indicator');
 const stream = document.querySelector('#stream');
+const detectionOverlay = document.querySelector('#detection-overlay');
 const liveDatetime = document.querySelector('#live-datetime');
 const noCameraOverlay = document.querySelector('#camera-no-feed');
 const logTerminal = document.querySelector('#log-terminal');
@@ -130,6 +131,129 @@ async function fetchSessionLogs() {
   }
 }
 
+// AI Overlay
+//
+// Detections arrive on their own SSE channel instead of being drawn into the
+// JPEG server-side. That keeps inference rate and stream rate independent,
+// costs the device no extra encoding, and leaves the boxes crisp even when the
+// adaptive ladder has degraded the video quality.
+let detectionSource = null;
+let detections = [];
+let detectionsReceivedAt = 0;
+let overlayFrameId = null;
+
+const DETECTION_STALE_MS = 2000;
+
+function startDetectionStream() {
+  if (detectionSource) return;
+
+  detectionSource = new EventSource('/api/plugins/events');
+  detectionSource.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      detections = Array.isArray(payload.detections) ? payload.detections : [];
+      detectionsReceivedAt = performance.now();
+    } catch (error) {
+      detections = [];
+    }
+  };
+  // EventSource reconnects on its own; just stop drawing what we last had.
+  detectionSource.onerror = () => { detections = []; };
+
+  if (overlayFrameId === null) {
+    overlayFrameId = requestAnimationFrame(renderOverlay);
+  }
+}
+
+function stopDetectionStream() {
+  if (detectionSource) {
+    detectionSource.close();
+    detectionSource = null;
+  }
+  detections = [];
+
+  if (overlayFrameId !== null) {
+    cancelAnimationFrame(overlayFrameId);
+    overlayFrameId = null;
+  }
+  if (detectionOverlay) detectionOverlay.hidden = true;
+}
+
+// The <img> is object-fit: contain, so the picture is letterboxed inside the
+// element. Detections are normalised against the source frame, which maps them
+// onto that inner rectangle -- using the element box instead would push boxes
+// into the black bars.
+function videoContentRect() {
+  const elementWidth = stream.clientWidth;
+  const elementHeight = stream.clientHeight;
+  const sourceWidth = stream.naturalWidth;
+  const sourceHeight = stream.naturalHeight;
+  if (!elementWidth || !elementHeight || !sourceWidth || !sourceHeight) return null;
+
+  const scale = Math.min(elementWidth / sourceWidth, elementHeight / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  return { left: (elementWidth - width) / 2, top: (elementHeight - height) / 2, width, height };
+}
+
+function renderOverlay() {
+  overlayFrameId = requestAnimationFrame(renderOverlay);
+
+  if (!detectionOverlay || !stream || stream.hidden) {
+    if (detectionOverlay) detectionOverlay.hidden = true;
+    return;
+  }
+
+  const rect = videoContentRect();
+  if (!rect) {
+    detectionOverlay.hidden = true;
+    return;
+  }
+  detectionOverlay.hidden = false;
+
+  const ratio = window.devicePixelRatio || 1;
+  const pixelWidth = Math.round(stream.clientWidth * ratio);
+  const pixelHeight = Math.round(stream.clientHeight * ratio);
+  if (detectionOverlay.width !== pixelWidth || detectionOverlay.height !== pixelHeight) {
+    detectionOverlay.width = pixelWidth;
+    detectionOverlay.height = pixelHeight;
+  }
+
+  const context = detectionOverlay.getContext('2d');
+  if (!context) return;
+
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, stream.clientWidth, stream.clientHeight);
+
+  // Boxes always trail their frame by the inference time. If results stop
+  // arriving altogether, clear them rather than leaving stale boxes frozen
+  // over a scene that has moved on.
+  if (performance.now() - detectionsReceivedAt > DETECTION_STALE_MS) return;
+
+  context.lineWidth = 2;
+  context.font = '13px monospace';
+  context.textBaseline = 'top';
+
+  for (const detection of detections) {
+    const x = rect.left + Number(detection.x || 0) * rect.width;
+    const y = rect.top + Number(detection.y || 0) * rect.height;
+    const width = Number(detection.width || 0) * rect.width;
+    const height = Number(detection.height || 0) * rect.height;
+    if (!(width > 0) || !(height > 0)) continue;
+
+    context.strokeStyle = '#00ff00';
+    context.strokeRect(x, y, width, height);
+
+    const confidence = Number(detection.confidence || 0);
+    const label = `${detection.label || 'object'} ${(confidence * 100).toFixed(0)}%`;
+    const labelTop = Math.max(rect.top, y - 17);
+    context.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    context.fillRect(x, labelTop, context.measureText(label).width + 8, 17);
+    context.fillStyle = '#00ff00';
+    context.fillText(label, x + 4, labelTop + 1);
+  }
+}
+
 // Refresh Camera Feed & Toggle Status
 async function refreshStatus() {
   const status = await request('/api/camera/status');
@@ -197,9 +321,11 @@ async function refreshStatus() {
   if (enabled && connected && running && !streamActive) {
     stream.src = '/api/camera/stream?generation=' + Date.now();
     streamActive = true;
+    startDetectionStream();
   } else if (!enabled || !connected || !running) {
     stream.removeAttribute('src');
     streamActive = false;
+    stopDetectionStream();
   }
 
   try {

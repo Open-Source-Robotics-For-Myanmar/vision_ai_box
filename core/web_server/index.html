@@ -48,6 +48,9 @@
     .video-card { background: var(--panel-bg); border: 1px solid var(--panel-border); position: relative; }
     .video-viewport { width: 100%; height: 480px; background: #000; position: relative; display: flex; justify-content: center; align-items: center; overflow: hidden; }
     #stream { width: 100%; height: 100%; object-fit: contain; }
+    /* Sits above the video but below the text overlays. pointer-events:none so
+       it never intercepts clicks meant for the controls underneath. */
+    #detection-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
     .camera-no-feed {
       position: absolute;
       inset: 0;
@@ -316,6 +319,7 @@
                 </div>
               </div>
               <img id="stream" alt="Live camera stream" hidden>
+              <canvas id="detection-overlay" hidden></canvas>
             </div>
 
             <div class="toolbar">

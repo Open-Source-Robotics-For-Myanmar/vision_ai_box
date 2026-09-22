@@ -34,10 +34,14 @@ public:
         }
     }
 
-    void process(const FrameContext& frame) override {
+    PluginResult process(const FrameContext& frame) override {
+        PluginResult result;
         if (!enabled_.load() || !frame.color || frame.color->empty()) {
-            return;
+            return result;
         }
+
+        // Prototype: no recognition yet, so nothing is reported.
+        return result;
     }
 
     void update_settings(const nlohmann::json& config) override {
