@@ -47,6 +47,10 @@ private:
     void processing_loop();
     void process_frame_now(const FrameContext& frame);
     void clear_result();
+    bool load_plugin_unlocked(const std::filesystem::path& plugin_path);
+    bool unload_plugin_unlocked(const std::string& plugin_name);
+    bool activate_plugin_unlocked(const std::string& name);
+    std::vector<std::string> loaded_plugin_names_except(const std::string& keep_name) const;
 
     Logger& logger_;
     mutable std::mutex mutex_;
@@ -54,6 +58,7 @@ private:
     std::unordered_map<std::string, std::shared_ptr<PluginInstance>> plugins_;
     std::unordered_map<std::string, std::filesystem::path> plugin_paths_;
     std::string active_plugin_name_;
+    std::string loading_plugin_name_;
     std::filesystem::path plugin_directory_;
     // Capacity one: the detector should always get the freshest frame
     // available rather than one that was already stale before inference began.

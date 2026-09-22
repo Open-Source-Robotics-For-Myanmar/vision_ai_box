@@ -456,6 +456,31 @@ function getFileExtensionName(fileName) {
   return '📄';
 }
 
+const pluginStatusStyles = {
+  active: { label: 'Active', color: '#00ff00', className: 'active' },
+  loading: { label: 'Loading', color: '#4ea1ff', className: 'loading' },
+  unloading: { label: 'Unloading', color: '#ff8a00', className: 'unloading' },
+  loaded: { label: 'Disabled', color: '#ffb300', className: 'disabled' },
+  unloaded: { label: 'Unloaded', color: '#888', className: 'unloaded' }
+};
+
+function pluginStatusStyle(state) {
+  return pluginStatusStyles[state] || pluginStatusStyles.unloaded;
+}
+
+function markPluginState(pluginName, state) {
+  if (!pluginList) return;
+  const style = pluginStatusStyle(state);
+  pluginList.querySelectorAll('.plugin-card').forEach((card) => {
+    const radio = card.querySelector('input[type="radio"]');
+    if (!radio || radio.value !== pluginName) return;
+    const status = card.querySelector('.plugin-status');
+    if (!status) return;
+    status.className = `plugin-status ${style.className}`;
+    status.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;background:${style.color}"></span>${style.label}`;
+  });
+}
+
 function renderPluginList(plugins) {
   if (!pluginList) return;
 
@@ -499,9 +524,10 @@ function renderPluginList(plugins) {
 
     const settings = plugin.settings || {};
     const status = document.createElement('span');
-    const statusText = plugin.enabled ? 'Active' : plugin.loaded ? 'Disabled' : 'Unloaded';
-    status.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;background:${plugin.enabled ? '#00ff00' : plugin.loaded ? '#ffb300' : '#888'}"></span>${statusText}`;
-    status.className = `plugin-status ${plugin.enabled ? 'active' : plugin.loaded ? 'disabled' : 'unloaded'}`;
+    const pluginState = String(plugin.state || (plugin.enabled ? 'active' : plugin.loaded ? 'loaded' : 'unloaded'));
+    const style = pluginStatusStyle(pluginState);
+    status.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;background:${style.color}"></span>${style.label}`;
+    status.className = `plugin-status ${style.className}`;
 
     top.appendChild(radio);
     top.appendChild(text);
@@ -512,8 +538,13 @@ function renderPluginList(plugins) {
       if (plugin.enabled && plugin.name === selectedPluginName) {
         return;
       }
+      const outgoingName = selectedPluginName;
       try {
         selectedPluginName = plugin.name;
+        if (outgoingName && outgoingName !== plugin.name) {
+          markPluginState(outgoingName, 'unloading');
+        }
+        markPluginState(plugin.name, 'loading');
         await request('/api/plugins', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -522,6 +553,7 @@ function renderPluginList(plugins) {
         await refreshPluginList();
       } catch (error) {
         console.error('Unable to select plugin', error);
+        await refreshPluginList();
       }
     };
     radio.addEventListener('change', () => {
@@ -567,7 +599,10 @@ function renderPluginSettings(plugin) {
   title.textContent = `Configuration: ${plugin.name}`;
   const subtitle = document.createElement('div');
   subtitle.className = 'plugin-settings-subtitle';
-  subtitle.textContent = plugin.loaded ? 'Runtime configuration' : 'Select this plugin to load it at runtime';
+  subtitle.textContent = plugin.state === 'loading' ? 'Loading plugin library...'
+    : plugin.state === 'unloading' ? 'Unloading plugin library...'
+    : plugin.loaded ? 'Runtime configuration'
+    : 'Select this plugin to load it at runtime';
   pluginSettings.appendChild(title);
   pluginSettings.appendChild(subtitle);
 

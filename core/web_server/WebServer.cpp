@@ -805,9 +805,8 @@ void WebServer::handle_client(int client_socket)
                 }
 
                 const bool enabled = payload.value("enabled", false);
-                const bool loaded = enabled && plugin_manager_->load_plugin_by_name(name);
                 const bool success = enabled
-                    ? loaded && plugin_manager_->select_plugin(name)
+                    ? plugin_manager_->select_plugin(name)
                     : plugin_manager_->unload_plugin(name);
                 const json plugin_info = plugin_manager_->get_all_plugin_info();
                 send_all(client_socket, http_response(success ? 200 : 404, "application/json", json_response({
