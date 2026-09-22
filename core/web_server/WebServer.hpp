@@ -79,6 +79,29 @@ private:
 
 class PluginManager;
 
+// Published by each MJPEG client so /api/camera/status can report what the
+// browser is actually receiving, which is not the camera capture rate.
+struct StreamClientStats
+{
+    std::atomic<double> delivered_fps{0.0};
+    std::atomic<int> profile_level{2};
+    std::atomic<int> jpeg_quality{65};
+    std::atomic<std::uint64_t> frames_skipped{0};
+    // Steady-clock nanoseconds of the last delivered frame. A client that
+    // stalls stops publishing, so the reader needs this to decay the rate
+    // instead of reporting the last good value forever.
+    std::atomic<std::int64_t> last_frame_ns{0};
+};
+
+struct StreamSummary
+{
+    int clients{0};
+    double delivered_fps{0.0};
+    int profile_level{-1};
+    int jpeg_quality{0};
+    std::uint64_t frames_skipped{0};
+};
+
 class WebServer
 {
 public:
@@ -103,6 +126,11 @@ private:
         std::uint64_t sequence, const cv::Mat& source, const StreamProfile& profile,
         double& encode_ms);
 
+    // Stream telemetry
+    std::shared_ptr<StreamClientStats> register_stream_client();
+    void unregister_stream_client(const std::shared_ptr<StreamClientStats>& stats);
+    StreamSummary stream_summary() const;
+
 
     // Member variables
     Logger& logger_;
@@ -125,6 +153,8 @@ private:
     std::vector<std::thread> client_threads_;
     mutable std::mutex sessions_mutex_;
     FrameBuffer latest_stream_frame_;
+    mutable std::mutex stream_stats_mutex_;
+    std::vector<std::shared_ptr<StreamClientStats>> stream_stats_;
     mutable std::mutex encoded_cache_mutex_;
     std::uint64_t encoded_cache_sequence_{0};
     StreamProfile encoded_cache_profile_{};

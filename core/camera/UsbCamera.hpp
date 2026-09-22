@@ -2,11 +2,11 @@
 
 #include "CameraSettings.hpp"
 #include "FrameContext.hpp"
+#include "RateMeter.hpp"
 #include "Toggles.hpp"
 
 #include <atomic>
 #include <chrono>
-#include <deque>
 #include <functional>
 #include <mutex>
 #include <opencv2/videoio.hpp>
@@ -33,7 +33,7 @@ public:
     bool latest_frame(FrameContext& frame);
     bool is_running() const noexcept;
     bool check_device_state() const noexcept;
-    double measured_fps() const noexcept;
+    double measured_fps() const;
 
 private:
     bool initialize();
@@ -41,7 +41,6 @@ private:
     void configure();
     bool verify_frame();
     void acquisition_loop();
-    void update_measured_fps();
 
     Logger& logger_;
     CameraSettings settings_;
@@ -59,6 +58,5 @@ private:
     std::atomic<bool> processing_enabled_{false};
     std::chrono::steady_clock::time_point last_read_warning_{};
     mutable std::mutex fps_mutex_;
-    std::deque<std::chrono::steady_clock::time_point> frame_timestamps_;
-    std::atomic<double> measured_fps_{0.0};
+    mutable RateMeter fps_meter_;
 };

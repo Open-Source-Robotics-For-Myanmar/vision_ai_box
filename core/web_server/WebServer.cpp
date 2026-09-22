@@ -2,6 +2,7 @@
 
 #include "Logger.hpp"
 #include "PluginManager.hpp"
+#include "RateMeter.hpp"
 
 #include <arpa/inet.h>
 #include <algorithm>
@@ -192,17 +193,8 @@ struct StreamController
     int jpeg_quality{65};
     int poor_samples{0};
     int good_samples{0};
-    std::chrono::steady_clock::time_point last_upgrade{};
+    std::chrono::steady_clock::time_point last_change{};
     StreamMetrics metrics{};
-
-    void downgrade_for_send_delay(const StreamProfile& current, double send_ms)
-    {
-        if (send_ms <= 1000.0 / current.target_fps * 1.25) {
-            return;
-        }
-        poor_samples = 3;
-        good_samples = 0;
-    }
 
     StreamProfile profile(const cv::Size& source_size) const
     {
@@ -218,52 +210,78 @@ struct StreamController
         metrics.last_send_ms = send_ms;
 
         const double frame_interval_ms = 1000.0 / current.target_fps;
-        const double required_bits_per_second = static_cast<double>(bytes) * 8.0 * current.target_fps;
-        const double observed_bits_per_second = send_ms > 0.0
-            ? static_cast<double>(bytes) * 8.0 * 1000.0 / send_ms
-            : required_bits_per_second;
-        const bool congested = send_ms > frame_interval_ms * 1.25 ||
-            observed_bits_per_second < required_bits_per_second * 1.10;
+        const auto now = std::chrono::steady_clock::now();
+
+        // Comparing observed against required bits per second reduces to this:
+        // the encoded size sits on both sides of that inequality and cancels,
+        // leaving a plain threshold on how long the send took.
+        const bool congested = send_ms > frame_interval_ms * 0.90;
 
         if (congested) {
-            ++poor_samples;
             good_samples = 0;
-            if (poor_samples >= 3) {
-                if (jpeg_quality > 40) {
-                    jpeg_quality = std::max(40, jpeg_quality - 10);
-                } else if (level > 0) {
-                    --level;
-                    jpeg_quality = 60;
-                }
+            // Overrunning the frame budget outright counts double, so a badly
+            // congested link still reaches the threshold in two samples.
+            poor_samples += send_ms > frame_interval_ms * 1.25 ? 2 : 1;
+            if (poor_samples >= 3 && now - last_change >= kSettleInterval) {
+                step_down();
                 poor_samples = 0;
-                last_upgrade = std::chrono::steady_clock::now();
+                last_change = now;
             }
             return;
         }
 
         poor_samples = 0;
-        if (send_ms < frame_interval_ms * 0.50 &&
-            observed_bits_per_second > required_bits_per_second * 1.80) {
+        if (send_ms < frame_interval_ms * 0.50) {
             ++good_samples;
         } else {
             good_samples = 0;
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        if (good_samples >= 30 && now - last_upgrade >= std::chrono::seconds(10)) {
-            if (jpeg_quality < 80) {
-                jpeg_quality = std::min(80, jpeg_quality + 5);
-            } else if (level < 3) {
-                ++level;
-                jpeg_quality = 70;
-            } else {
-                return;
-            }
+        if (good_samples >= 30 && now - last_change >= kRecoveryInterval) {
+            step_up();
             good_samples = 0;
-            last_upgrade = now;
+            last_change = now;
+        }
+    }
+
+private:
+    // A profile change needs time to take effect before its result can be
+    // judged. Without this the controller re-reacts to sends that were already
+    // in flight and walks the whole ladder down in a fraction of a second.
+    static constexpr auto kSettleInterval = std::chrono::milliseconds(1000);
+    static constexpr auto kRecoveryInterval = std::chrono::seconds(10);
+
+    void step_down()
+    {
+        if (jpeg_quality > 40) {
+            jpeg_quality = std::max(40, jpeg_quality - 10);
+        } else if (level > 0) {
+            --level;
+            jpeg_quality = 60;
+        }
+    }
+
+    void step_up()
+    {
+        if (jpeg_quality < 80) {
+            jpeg_quality = std::min(80, jpeg_quality + 5);
+        } else if (level < 3) {
+            ++level;
+            jpeg_quality = 70;
         }
     }
 };
+
+const char* profile_level_name(int level)
+{
+    switch (level) {
+    case 0: return "very_low";
+    case 1: return "low";
+    case 2: return "medium";
+    case 3: return "high";
+    default: return "idle";
+    }
+}
 
 std::string header_value(const std::string& request, const std::string& name)
 {
@@ -407,6 +425,51 @@ std::shared_ptr<std::vector<uchar>> WebServer::encoded_frame(
     encoded_cache_profile_ = profile;
     encoded_cache_data_ = encoded;
     return encoded;
+}
+
+std::shared_ptr<StreamClientStats> WebServer::register_stream_client()
+{
+    auto stats = std::make_shared<StreamClientStats>();
+    std::lock_guard lock(stream_stats_mutex_);
+    stream_stats_.push_back(stats);
+    return stats;
+}
+
+void WebServer::unregister_stream_client(const std::shared_ptr<StreamClientStats>& stats)
+{
+    std::lock_guard lock(stream_stats_mutex_);
+    stream_stats_.erase(std::remove(stream_stats_.begin(), stream_stats_.end(), stats),
+                        stream_stats_.end());
+}
+
+StreamSummary WebServer::stream_summary() const
+{
+    // Matches the RateMeter window, so a stalled client reads as zero rather
+    // than holding the rate it managed before it stopped keeping up.
+    constexpr std::int64_t stale_after_ns = 2'000'000'000;
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    StreamSummary summary;
+    std::lock_guard lock(stream_stats_mutex_);
+    for (const auto& stats : stream_stats_) {
+        if (!stats) {
+            continue;
+        }
+        // Report the worst-off viewer, since that is the one that reveals a
+        // problem; with a single dashboard open it is simply that viewer.
+        const std::int64_t last_ns = stats->last_frame_ns.load(std::memory_order_acquire);
+        const bool stale = last_ns == 0 || now_ns - last_ns > stale_after_ns;
+        const double fps = stale ? 0.0 : stats->delivered_fps.load(std::memory_order_acquire);
+        if (summary.clients == 0 || fps < summary.delivered_fps) {
+            summary.delivered_fps = fps;
+            summary.profile_level = stats->profile_level.load(std::memory_order_acquire);
+            summary.jpeg_quality = stats->jpeg_quality.load(std::memory_order_acquire);
+            summary.frames_skipped = stats->frames_skipped.load(std::memory_order_acquire);
+        }
+        ++summary.clients;
+    }
+    return summary;
 }
 
 WebServer::~WebServer()
@@ -879,13 +942,20 @@ void WebServer::handle_client(int client_socket)
         const bool running = camera_.is_running();
         const bool error = toggles_.camera_error.load(std::memory_order_acquire);
         const double fps = camera_.measured_fps();
+        const StreamSummary stream = stream_summary();
 
         send_all(client_socket, http_response(200, "application/json", json_response({
             {"enabled", enabled},
             {"connected", connected},
             {"running", running},
             {"error", error},
-            {"fps", fps}
+            {"fps", fps},
+            {"stream_clients", stream.clients},
+            {"stream_fps", stream.delivered_fps},
+            {"stream_level", stream.profile_level},
+            {"stream_profile", profile_level_name(stream.profile_level)},
+            {"stream_quality", stream.jpeg_quality},
+            {"stream_frames_skipped", stream.frames_skipped}
         })));
     } else if (method == "POST" && path == "/api/camera/start") {
         const bool started = start_camera();
@@ -899,7 +969,10 @@ void WebServer::handle_client(int client_socket)
         const std::string header = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
         if (send_all(client_socket, header)) {
             std::uint64_t last_sequence = 0;
+            bool first_frame = true;
             StreamController controller;
+            RateMeter delivered_meter;
+            const std::shared_ptr<StreamClientStats> stats = register_stream_client();
             auto next_frame_deadline = std::chrono::steady_clock::now();
             while (running_ && camera_.is_running() &&
                    stream_generation == stream_generation_.load(std::memory_order_acquire)) {
@@ -908,9 +981,12 @@ void WebServer::handle_client(int client_socket)
                 if (!latest_stream_frame_.wait_for_newer(last_sequence, frame_ptr, sequence)) {
                     continue;
                 }
-                if (sequence > last_sequence + 1) {
+                // The camera sequence is already well past zero by the time a
+                // client attaches, so the first frame is not a skip.
+                if (!first_frame && sequence > last_sequence + 1) {
                     controller.metrics.frames_skipped += sequence - last_sequence - 1;
                 }
+                first_frame = false;
                 last_sequence = sequence;
 
                 const StreamProfile profile = controller.profile(frame_ptr->size());
@@ -928,12 +1004,23 @@ void WebServer::handle_client(int client_socket)
                 const double send_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - send_start).count();
                 controller.observe(encoded->size(), send_ms, profile);
-                controller.downgrade_for_send_delay(profile, send_ms);
 
-                next_frame_deadline = std::max(next_frame_deadline, std::chrono::steady_clock::now());
-                next_frame_deadline += std::chrono::milliseconds(1000 / profile.target_fps);
+                const auto delivered_at = std::chrono::steady_clock::now();
+                delivered_meter.record(delivered_at);
+                stats->delivered_fps.store(delivered_meter.rate(delivered_at), std::memory_order_release);
+                stats->profile_level.store(controller.level, std::memory_order_release);
+                stats->jpeg_quality.store(controller.jpeg_quality, std::memory_order_release);
+                stats->frames_skipped.store(controller.metrics.frames_skipped, std::memory_order_release);
+                stats->last_frame_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    delivered_at.time_since_epoch()).count(), std::memory_order_release);
+
+                // Microseconds rather than milliseconds: integer division of
+                // 1000 by a 15 fps target yields 66 ms, pacing at 15.15 fps.
+                next_frame_deadline = std::max(next_frame_deadline, delivered_at);
+                next_frame_deadline += std::chrono::microseconds(1000000 / profile.target_fps);
                 std::this_thread::sleep_until(next_frame_deadline);
             }
+            unregister_stream_client(stats);
             logger_.log(LogLevel::INFO, "WEB_SERVER",
                 "Stream ended: frames=" + std::to_string(controller.metrics.frames_sent) +
                 ", skipped=" + std::to_string(controller.metrics.frames_skipped) +
