@@ -12,11 +12,21 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
 #include <vector>
 
+namespace httplib
+{
+class Server;
+class Request;
+class Response;
+class DataSink;
+}
+
 class Logger;
+class PluginManager;
 
 class FrameBuffer
 {
@@ -77,10 +87,6 @@ private:
     bool stopped_{false};
 };
 
-class PluginManager;
-
-// Published by each MJPEG client so /api/camera/status can report what the
-// browser is actually receiving, which is not the camera capture rate.
 struct StreamClientStats
 {
     std::atomic<double> delivered_fps{0.0};
@@ -88,9 +94,6 @@ struct StreamClientStats
     std::atomic<int> frame_height{0};
     std::atomic<int> jpeg_quality{0};
     std::atomic<std::uint64_t> frames_skipped{0};
-    // Steady-clock nanoseconds of the last delivered frame. A client that
-    // stalls stops publishing, so the reader needs this to decay the rate
-    // instead of reporting the last good value forever.
     std::atomic<std::int64_t> last_frame_ns{0};
 };
 
@@ -114,27 +117,21 @@ public:
     void stop() noexcept;
 
 private:
-    // HTTP request handling methods
-    void accept_loop();
-    void handle_client(int client_socket);
-    bool is_authenticated(const std::string& request) const;
-
-    // Camera control methods
+    void register_routes();
+    bool is_authenticated(const httplib::Request& request) const;
     bool start_camera();
     void stop_camera();
     CameraSettings camera_settings() const;
     bool apply_camera_settings(const CameraSettings& settings);
-    std::shared_ptr<std::vector<uchar>> encoded_frame(
-        std::uint64_t sequence, const cv::Mat& source, const StreamProfile& profile,
-        double& encode_ms);
+    nlohmann::json camera_status_json() const;
+    nlohmann::json recording_status_json() const;
+    bool stream_h264(httplib::DataSink& sink);
+    bool write_sse(httplib::DataSink& sink);
 
-    // Stream telemetry
     std::shared_ptr<StreamClientStats> register_stream_client();
     void unregister_stream_client(const std::shared_ptr<StreamClientStats>& stats);
     StreamSummary stream_summary() const;
 
-
-    // Member variables
     Logger& logger_;
     SelectedCamera& camera_;
     ServiceToggles& toggles_;
@@ -142,28 +139,16 @@ private:
     BaseSystem base_system_;
 
     std::atomic<bool> running_{false};
-
-    int listen_socket_{-1};
     std::uint16_t port_{0};
+    std::unique_ptr<httplib::Server> server_;
     std::thread server_thread_;
 
     std::mutex camera_control_mutex_;
     std::atomic<std::uint64_t> stream_generation_{0};
 
-    mutable std::mutex clients_mutex_;
-    std::vector<int> client_sockets_;
-    std::vector<std::thread> client_threads_;
     mutable std::mutex sessions_mutex_;
+    std::vector<std::string> sessions_;
     FrameBuffer latest_stream_frame_;
     mutable std::mutex stream_stats_mutex_;
     std::vector<std::shared_ptr<StreamClientStats>> stream_stats_;
-    mutable std::mutex encoded_cache_mutex_;
-    std::uint64_t encoded_cache_sequence_{0};
-    StreamProfile encoded_cache_profile_{};
-    std::shared_ptr<std::vector<uchar>> encoded_cache_data_;
-
-    // Browsers commonly open several simultaneous HTTP connections for the UI,
-    // polling, and the MJPEG stream, so this must be higher than the single-tab case.
-    static constexpr std::size_t kMaxClientConnections = 32;
-    std::vector<std::string> sessions_;
 };
