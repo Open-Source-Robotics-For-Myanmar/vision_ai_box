@@ -140,7 +140,9 @@ async function refreshStatus() {
   const actualFps = Number(status.fps || 0);
   const streamFps = Number(status.stream_fps || 0);
   const streamClients = Number(status.stream_clients || 0);
-  const streamProfile = String(status.stream_profile || 'idle');
+  const streamWidth = Number(status.stream_width || 0);
+  const streamHeight = Number(status.stream_height || 0);
+  const streamQuality = Number(status.stream_quality || 0);
 
   cameraToggle.checked = enabled;
 
@@ -150,7 +152,10 @@ async function refreshStatus() {
       // showing only the former hides what the browser is really receiving.
       const parts = [`CAM ${actualFps.toFixed(1)}`];
       if (streamClients > 0 && Number.isFinite(streamFps)) {
-        parts.push(`STREAM ${streamFps.toFixed(1)} (${streamProfile})`);
+        const detail = streamWidth > 0 && streamHeight > 0
+          ? ` @ ${streamWidth}x${streamHeight} q${streamQuality}`
+          : '';
+        parts.push(`STREAM ${streamFps.toFixed(1)}${detail}`);
       }
       cameraFpsIndicator.textContent = `FPS ${parts.join(' | ')}`;
       cameraFpsIndicator.hidden = false;

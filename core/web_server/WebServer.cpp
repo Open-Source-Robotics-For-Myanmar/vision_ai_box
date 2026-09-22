@@ -177,20 +177,27 @@ cv::Mat resize_for_stream(const cv::Mat& source, const StreamProfile& profile)
     return resized;
 }
 
-StreamProfile profile_for_level(int level, const cv::Size& source_size)
+int configured_stream_fps()
 {
-    switch (std::clamp(level, 0, 3)) {
-    case 0: return StreamProfile::very_low();
-    case 1: return StreamProfile::low();
-    case 2: return StreamProfile::medium();
-    default: return StreamProfile::high(source_size);
+    const char* value = std::getenv("VISION_AI_BOX_STREAM_FPS");
+    if (!value || !*value) {
+        return kDefaultStreamFps;
+    }
+
+    try {
+        return std::clamp(std::stoi(value), 1, 60);
+    } catch (const std::exception&) {
+        return kDefaultStreamFps;
     }
 }
 
 struct StreamController
 {
-    int level{2};
-    int jpeg_quality{65};
+    explicit StreamController(int fps) : target_fps(fps) {}
+
+    int step{0};
+    int jpeg_quality{75};
+    int target_fps{kDefaultStreamFps};
     int poor_samples{0};
     int good_samples{0};
     std::chrono::steady_clock::time_point last_change{};
@@ -198,9 +205,7 @@ struct StreamController
 
     StreamProfile profile(const cv::Size& source_size) const
     {
-        StreamProfile selected = profile_for_level(level, source_size);
-        selected.jpeg_quality = jpeg_quality;
-        return selected.clamped();
+        return StreamProfile::for_step(step, source_size, jpeg_quality, target_fps);
     }
 
     void observe(std::size_t bytes, double send_ms, const StreamProfile& current)
@@ -223,7 +228,12 @@ struct StreamController
             // congested link still reaches the threshold in two samples.
             poor_samples += send_ms > frame_interval_ms * 1.25 ? 2 : 1;
             if (poor_samples >= 3 && now - last_change >= kSettleInterval) {
-                step_down();
+                // Size the correction to the overrun. A send that took five
+                // frame intervals needs roughly a fivefold cut in bytes, and
+                // one notch per settling period would spend ten seconds
+                // converging on a link that is already visibly failing.
+                const int severity = static_cast<int>(send_ms / frame_interval_ms);
+                step_down(std::clamp(severity, 1, 4));
                 poor_samples = 0;
                 last_change = now;
             }
@@ -251,37 +261,45 @@ private:
     static constexpr auto kSettleInterval = std::chrono::milliseconds(1000);
     static constexpr auto kRecoveryInterval = std::chrono::seconds(10);
 
-    void step_down()
+    // Walk quality down inside the current rung first, then cut resolution.
+    // Quality carries over into the new rung rather than resetting to its top:
+    // a 0.75 scale change removes about 44% of the pixels, which a quality
+    // jump would hand straight back, making the step counterproductive.
+    void step_down(int notches)
     {
-        if (jpeg_quality > 40) {
-            jpeg_quality = std::max(40, jpeg_quality - 10);
-        } else if (level > 0) {
-            --level;
-            jpeg_quality = 60;
+        for (int applied = 0; applied < notches; ++applied) {
+            const StreamStep& rung = kStreamSteps[std::clamp(step, 0, kStreamStepCount - 1)];
+            if (jpeg_quality > rung.min_quality) {
+                jpeg_quality = std::max(rung.min_quality, jpeg_quality - 10);
+                continue;
+            }
+
+            if (step >= kStreamStepCount - 1) {
+                return;
+            }
+            ++step;
+            const StreamStep& next = kStreamSteps[step];
+            jpeg_quality = std::clamp(jpeg_quality, next.min_quality, next.max_quality);
         }
     }
 
+    // The mirror image: raise quality inside the rung, and when moving to a
+    // richer one drop to its floor so the pixel increase is not compounded by
+    // a quality increase in the same move.
     void step_up()
     {
-        if (jpeg_quality < 80) {
-            jpeg_quality = std::min(80, jpeg_quality + 5);
-        } else if (level < 3) {
-            ++level;
-            jpeg_quality = 70;
+        const StreamStep& rung = kStreamSteps[std::clamp(step, 0, kStreamStepCount - 1)];
+        if (jpeg_quality < rung.max_quality) {
+            jpeg_quality = std::min(rung.max_quality, jpeg_quality + 5);
+            return;
+        }
+
+        if (step > 0) {
+            --step;
+            jpeg_quality = kStreamSteps[step].min_quality;
         }
     }
 };
-
-const char* profile_level_name(int level)
-{
-    switch (level) {
-    case 0: return "very_low";
-    case 1: return "low";
-    case 2: return "medium";
-    case 3: return "high";
-    default: return "idle";
-    }
-}
 
 std::string header_value(const std::string& request, const std::string& name)
 {
@@ -463,7 +481,8 @@ StreamSummary WebServer::stream_summary() const
         const double fps = stale ? 0.0 : stats->delivered_fps.load(std::memory_order_acquire);
         if (summary.clients == 0 || fps < summary.delivered_fps) {
             summary.delivered_fps = fps;
-            summary.profile_level = stats->profile_level.load(std::memory_order_acquire);
+            summary.frame_width = stats->frame_width.load(std::memory_order_acquire);
+            summary.frame_height = stats->frame_height.load(std::memory_order_acquire);
             summary.jpeg_quality = stats->jpeg_quality.load(std::memory_order_acquire);
             summary.frames_skipped = stats->frames_skipped.load(std::memory_order_acquire);
         }
@@ -952,8 +971,8 @@ void WebServer::handle_client(int client_socket)
             {"fps", fps},
             {"stream_clients", stream.clients},
             {"stream_fps", stream.delivered_fps},
-            {"stream_level", stream.profile_level},
-            {"stream_profile", profile_level_name(stream.profile_level)},
+            {"stream_width", stream.frame_width},
+            {"stream_height", stream.frame_height},
             {"stream_quality", stream.jpeg_quality},
             {"stream_frames_skipped", stream.frames_skipped}
         })));
@@ -965,12 +984,21 @@ void WebServer::handle_client(int client_socket)
         stop_camera();
         send_all(client_socket, http_response(200, "application/json", json_response({{"running", false}})));
     } else if (method == "GET" && path == "/api/camera/stream") {
+        // A default send buffer holds seconds of video, so send() returns long
+        // before the bytes reach the wire and a weakening link stays invisible
+        // until the buffer finally fills, at which point the delay arrives as a
+        // cliff. Sizing it to a few frames makes send duration a live reading of
+        // what the link can absorb. Linux doubles the requested value.
+        int stream_send_buffer = 64 * 1024;
+        setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF,
+                   &stream_send_buffer, sizeof(stream_send_buffer));
+
         const std::uint64_t stream_generation = stream_generation_.load(std::memory_order_acquire);
         const std::string header = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
         if (send_all(client_socket, header)) {
             std::uint64_t last_sequence = 0;
             bool first_frame = true;
-            StreamController controller;
+            StreamController controller(configured_stream_fps());
             RateMeter delivered_meter;
             const std::shared_ptr<StreamClientStats> stats = register_stream_client();
             auto next_frame_deadline = std::chrono::steady_clock::now();
@@ -1008,8 +1036,9 @@ void WebServer::handle_client(int client_socket)
                 const auto delivered_at = std::chrono::steady_clock::now();
                 delivered_meter.record(delivered_at);
                 stats->delivered_fps.store(delivered_meter.rate(delivered_at), std::memory_order_release);
-                stats->profile_level.store(controller.level, std::memory_order_release);
-                stats->jpeg_quality.store(controller.jpeg_quality, std::memory_order_release);
+                stats->frame_width.store(profile.max_width, std::memory_order_release);
+                stats->frame_height.store(profile.max_height, std::memory_order_release);
+                stats->jpeg_quality.store(profile.jpeg_quality, std::memory_order_release);
                 stats->frames_skipped.store(controller.metrics.frames_skipped, std::memory_order_release);
                 stats->last_frame_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     delivered_at.time_since_epoch()).count(), std::memory_order_release);
@@ -1026,7 +1055,7 @@ void WebServer::handle_client(int client_socket)
                 ", skipped=" + std::to_string(controller.metrics.frames_skipped) +
                 ", bytes=" + std::to_string(controller.metrics.bytes_sent) +
                 ", quality=" + std::to_string(controller.jpeg_quality) +
-                ", level=" + std::to_string(controller.level) +
+                ", step=" + std::to_string(controller.step) +
                 ", encode_ms=" + std::to_string(controller.metrics.last_encode_ms) +
                 ", send_ms=" + std::to_string(controller.metrics.last_send_ms));
         }
