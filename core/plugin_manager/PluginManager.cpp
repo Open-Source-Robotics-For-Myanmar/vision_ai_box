@@ -27,6 +27,11 @@ PluginManager::~PluginManager()
 bool PluginManager::load_plugin(const std::filesystem::path& plugin_path)
 {
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    return load_plugin_unlocked(plugin_path);
+}
+
+bool PluginManager::load_plugin_unlocked(const std::filesystem::path& plugin_path)
+{
     if (!std::filesystem::exists(plugin_path)) {
         logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Plugin file not found: " + plugin_path.string());
         return false;
@@ -69,6 +74,7 @@ bool PluginManager::load_plugin(const std::filesystem::path& plugin_path)
     loaded->handle = handle;
     loaded->plugin = plugin_ptr;
     loaded->destroy_fn = destroy_fn;
+    loaded->state = PluginState::Loading;
 
     {
         std::lock_guard lock(mutex_);
@@ -102,9 +108,21 @@ bool PluginManager::load_plugin_by_name(const std::string& plugin_name)
     return load_plugin(plugin_path);
 }
 
-bool PluginManager::unload_plugin(const std::string& plugin_name)
+std::vector<std::string> PluginManager::loaded_plugin_names_except(const std::string& keep_name) const
 {
-    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    std::vector<std::string> names;
+    std::lock_guard lock(mutex_);
+    names.reserve(plugins_.size());
+    for (const auto& [name, instance] : plugins_) {
+        if (name != keep_name) {
+            names.push_back(name);
+        }
+    }
+    return names;
+}
+
+bool PluginManager::unload_plugin_unlocked(const std::string& plugin_name)
+{
     frame_queue_.clear();
     std::shared_ptr<PluginInstance> removed;
     {
@@ -119,47 +137,36 @@ bool PluginManager::unload_plugin(const std::string& plugin_name)
             active_plugin_name_.clear();
         }
         if (removed) {
-            removed->state = PluginState::Unloaded;
+            removed->state = PluginState::Unloading;
             if (removed->plugin) {
                 removed->plugin->set_enabled(false);
             }
         }
     }
 
-    // Otherwise the browser keeps drawing boxes from a plugin that is gone.
+    // Stop feeding detections from a plugin that is about to be destroyed.
     clear_result();
-    logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Plugin unloaded: " + plugin_name);
+    logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Unloading plugin: " + plugin_name);
     removed.reset();
+    logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Plugin unloaded: " + plugin_name);
     return true;
+}
+
+bool PluginManager::unload_plugin(const std::string& plugin_name)
+{
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    return unload_plugin_unlocked(plugin_name);
 }
 
 bool PluginManager::unload_all_plugins()
 {
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
-    std::vector<std::shared_ptr<PluginInstance>> removed;
-    frame_queue_.clear();
-    {
-        std::lock_guard lock(mutex_);
-        active_plugin_name_.clear();
-        for (auto it = plugins_.begin(); it != plugins_.end(); ) {
-            if (it->second) {
-                it->second->state = PluginState::Unloaded;
-                if (it->second->plugin) {
-                    it->second->plugin->set_enabled(false);
-                }
-            }
-            removed.push_back(std::move(it->second));
-            it = plugins_.erase(it);
-        }
+    const std::vector<std::string> names = loaded_plugin_names_except({});
+    bool success = true;
+    for (const auto& name : names) {
+        success = unload_plugin_unlocked(name) && success;
     }
-
-    for (auto& instance : removed) {
-        instance.reset();
-    }
-
-    clear_result();
-    logger_.log(LogLevel::INFO, "PLUGIN_MGR", "All plugins unloaded");
-    return true;
+    return success;
 }
 
 void PluginManager::discover_plugins(const std::filesystem::path& plugins_directory)
@@ -278,40 +285,89 @@ bool PluginManager::set_plugin_enabled(const std::string& name, bool enabled)
     return unload_plugin(name);
 }
 
+bool PluginManager::activate_plugin_unlocked(const std::string& name)
+{
+    std::lock_guard lock(mutex_);
+    auto it = plugins_.find(name);
+    if (it == plugins_.end() || !it->second || !it->second->plugin) {
+        return false;
+    }
+
+    it->second->plugin->set_enabled(true);
+    it->second->state = PluginState::Active;
+    active_plugin_name_ = name;
+    return true;
+}
+
 bool PluginManager::select_plugin(const std::string& name)
 {
     std::lock_guard lifecycle_lock(lifecycle_mutex_);
+
     {
         std::lock_guard lock(mutex_);
-        if (!plugins_.contains(name)) {
+        const auto it = plugins_.find(name);
+        if (it != plugins_.end() && it->second && it->second->state == PluginState::Active &&
+            it->second->plugin && it->second->plugin->is_enabled() &&
+            active_plugin_name_ == name && plugins_.size() == 1) {
+            return true;
+        }
+        if (!plugins_.contains(name) && !plugin_paths_.contains(name)) {
+            logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Cannot switch to unknown plugin: " + name);
             return false;
         }
-
-        if (active_plugin_name_ == name && plugins_.size() == 1) {
-            const auto& active = plugins_.find(name)->second;
-            if (active && active->state == PluginState::Active && active->plugin && active->plugin->is_enabled()) {
-                return true;
-            }
+        loading_plugin_name_ = name;
+        if (it != plugins_.end() && it->second && it->second->state != PluginState::Active) {
+            it->second->state = PluginState::Loading;
         }
-
-        for (auto& [plugin_name, instance] : plugins_) {
-            if (!instance || !instance->plugin) {
-                continue;
-            }
-            if (plugin_name == name) {
-                instance->plugin->set_enabled(true);
-                instance->state = PluginState::Active;
-            } else {
-                instance->plugin->set_enabled(false);
-                instance->state = PluginState::Loaded;
-            }
-        }
-        active_plugin_name_ = name;
     }
 
-    // Drop the outgoing plugin's detections so they do not briefly appear to
-    // belong to the newly selected one.
+    logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Loading plugin: " + name);
+
+    // Exclusive mode: the outgoing plugin must leave memory before the next
+    // one is created. Leaving it Loaded kept its threads and .so mapped, and
+    // the UI never saw an Unloaded state between modes.
+    const std::vector<std::string> outgoing = loaded_plugin_names_except(name);
+    for (const auto& outgoing_name : outgoing) {
+        if (!unload_plugin_unlocked(outgoing_name)) {
+            std::lock_guard lock(mutex_);
+            loading_plugin_name_.clear();
+            logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Failed to unload " + outgoing_name + " before switching");
+            return false;
+        }
+    }
+
+    bool already_loaded = false;
+    std::filesystem::path plugin_path;
+    {
+        std::lock_guard lock(mutex_);
+        already_loaded = plugins_.contains(name);
+        const auto path_it = plugin_paths_.find(name);
+        if (path_it != plugin_paths_.end()) {
+            plugin_path = path_it->second;
+        }
+    }
+
+    if (!already_loaded) {
+        if (plugin_path.empty() || !load_plugin_unlocked(plugin_path)) {
+            std::lock_guard lock(mutex_);
+            loading_plugin_name_.clear();
+            logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Failed to load plugin after unload: " + name);
+            return false;
+        }
+    }
+
     clear_result();
+    if (!activate_plugin_unlocked(name)) {
+        std::lock_guard lock(mutex_);
+        loading_plugin_name_.clear();
+        return false;
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+        loading_plugin_name_.clear();
+    }
+    logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Active plugin switched to: " + name);
     return true;
 }
 
@@ -322,11 +378,14 @@ nlohmann::json PluginManager::get_all_plugin_info() const
     for (const auto& [name, path] : plugin_paths_) {
         const auto loaded = plugins_.find(name);
         if (loaded != plugins_.end() && loaded->second && loaded->second->plugin) {
+            const PluginState state = name == loading_plugin_name_
+                ? PluginState::Loading
+                : loaded->second->state;
             result.push_back({
                 {"name", name},
                 {"loaded", true},
-                {"enabled", loaded->second->state == PluginState::Active},
-                {"state", plugin_state_name(loaded->second->state)},
+                {"enabled", state == PluginState::Active},
+                {"state", plugin_state_name(state)},
                 {"settings", loaded->second->plugin->get_settings()}
             });
         } else {
@@ -334,7 +393,9 @@ nlohmann::json PluginManager::get_all_plugin_info() const
                 {"name", name},
                 {"loaded", false},
                 {"enabled", false},
-                {"state", plugin_state_name(PluginState::Unloaded)},
+                {"state", plugin_state_name(name == loading_plugin_name_
+                    ? PluginState::Loading
+                    : PluginState::Unloaded)},
                 {"settings", nlohmann::json::object()}
             });
         }
