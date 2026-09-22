@@ -12,6 +12,7 @@ const detectionOverlay = document.querySelector('#detection-overlay');
 const liveDatetime = document.querySelector('#live-datetime');
 const noCameraOverlay = document.querySelector('#camera-no-feed');
 const logTerminal = document.querySelector('#log-terminal');
+const pluginLogTerminal = document.querySelector('#plugin-log-terminal');
 const recordToggleBtn = document.querySelector('#record-toggle-btn');
 const restartRecordBtn = document.querySelector('#restart-record-btn');
 const captureBtn = document.querySelector('#capture-btn');
@@ -111,29 +112,53 @@ async function request(path, options = {}) {
   return payload;
 }
 
-let sessionLogLines = [];
+let systemLogLines = [];
+let pluginLogLines = [];
+
+function logCategory(line) {
+  const match = String(line).match(/\]\s*\[(?:INFO|WARN|ERROR|DEBUG)\]\s*\[([^\]]+)\]/i);
+  return match ? match[1] : '';
+}
+
+function isPluginLog(line) {
+  const category = logCategory(line);
+  if (!category || category === 'PLUGIN_MGR') {
+    return false;
+  }
+  return /PLUGIN/i.test(category);
+}
+
+function renderLogTerminal(terminal, lines, emptyText) {
+  if (!terminal) return;
+  if (!lines.length) {
+    terminal.textContent = emptyText;
+    terminal.scrollTop = 0;
+    return;
+  }
+
+  const shouldScrollToBottom = terminal.scrollHeight - terminal.clientHeight <= terminal.scrollTop + 24;
+  terminal.textContent = lines.join('\n');
+  if (shouldScrollToBottom || terminal.scrollTop === 0) {
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+}
 
 function applySessionLogs(payload) {
   const incoming = Array.isArray(payload) ? payload : (payload && payload.lines) || [];
   const reset = !payload || payload.reset === true || Array.isArray(payload);
+  const systemIncoming = incoming.filter((line) => !isPluginLog(line));
+  const pluginIncoming = incoming.filter((line) => isPluginLog(line));
+
   if (reset) {
-    sessionLogLines = incoming.slice();
+    systemLogLines = systemIncoming;
+    pluginLogLines = pluginIncoming;
   } else {
-    sessionLogLines.push(...incoming);
+    systemLogLines.push(...systemIncoming);
+    pluginLogLines.push(...pluginIncoming);
   }
 
-  if (!logTerminal) return;
-  if (sessionLogLines.length === 0) {
-    logTerminal.textContent = 'No logs recorded for this session.';
-    logTerminal.scrollTop = 0;
-    return;
-  }
-
-  const shouldScrollToBottom = logTerminal.scrollHeight - logTerminal.clientHeight <= logTerminal.scrollTop + 24;
-  logTerminal.textContent = sessionLogLines.join('\n');
-  if (shouldScrollToBottom || logTerminal.scrollTop === 0) {
-    logTerminal.scrollTop = logTerminal.scrollHeight;
-  }
+  renderLogTerminal(logTerminal, systemLogLines, 'No system logs recorded for this session.');
+  renderLogTerminal(pluginLogTerminal, pluginLogLines, 'No plugin logs yet.');
 }
 
 // AI Overlay
