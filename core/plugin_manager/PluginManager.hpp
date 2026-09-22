@@ -30,6 +30,7 @@ public:
     bool load_plugin(const std::filesystem::path& plugin_path);
     bool load_plugin_by_name(const std::string& plugin_name);
     bool unload_plugin(const std::string& plugin_name);
+    bool unload_all_plugins();
     void discover_plugins(const std::filesystem::path& plugins_directory);
     void scan_plugins();
     void load_all_plugins(const std::filesystem::path& plugins_directory);

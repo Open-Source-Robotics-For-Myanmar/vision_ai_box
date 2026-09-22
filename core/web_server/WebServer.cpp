@@ -745,16 +745,14 @@ void WebServer::handle_client(int client_socket)
             try {
                 const json payload = json::parse(body);
                 const std::string name = payload.value("name", "");
-                if (name.empty()) {
-                    send_all(client_socket, http_response(400, "application/json", json_response({{"error", "plugin name required"}})));
-                } else {
-                    const bool success = plugin_manager_->unload_plugin(name);
-                    send_all(client_socket, http_response(success ? 200 : 404, "application/json", json_response({
-                        {"success", success},
-                        {"name", name},
-                        {"plugins", plugin_manager_->get_all_plugin_info()}
-                    })));
-                }
+                const bool success = name.empty()
+                    ? plugin_manager_->unload_all_plugins()
+                    : plugin_manager_->unload_plugin(name);
+                send_all(client_socket, http_response(success ? 200 : 404, "application/json", json_response({
+                    {"success", success},
+                    {"name", name},
+                    {"plugins", plugin_manager_->get_all_plugin_info()}
+                })));
             } catch (const std::exception&) {
                 send_all(client_socket, http_response(400, "application/json", json_response({{"error", "invalid JSON"}})));
             }
@@ -880,12 +878,14 @@ void WebServer::handle_client(int client_socket)
         const bool connected = camera_.check_device_state();
         const bool running = camera_.is_running();
         const bool error = toggles_.camera_error.load(std::memory_order_acquire);
+        const double fps = camera_.measured_fps();
 
         send_all(client_socket, http_response(200, "application/json", json_response({
             {"enabled", enabled},
             {"connected", connected},
             {"running", running},
-            {"error", error}
+            {"error", error},
+            {"fps", fps}
         })));
     } else if (method == "POST" && path == "/api/camera/start") {
         const bool started = start_camera();

@@ -81,6 +81,21 @@
     
     /* Dynamic Green Date Time Overlay */
     .camera-info-overlay { position: absolute; top: 12px; left: 14px; font-family: monospace; font-size: 16px; font-weight: bold; text-shadow: 1px 1px 3px #000; color: #00ff00; z-index: 10; }
+    .camera-fps-overlay {
+      position: absolute;
+      left: 14px;
+      top: 120px;
+      z-index: 10;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(255,255,255,0.15);
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 14px;
+      font-weight: 700;
+      color: #9ae6ff;
+      text-shadow: 1px 1px 3px rgba(0,0,0,0.8);
+    }
 
     /* Video Control Action Toolbar */
     .toolbar { background: #181818; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--panel-border); }
@@ -181,7 +196,7 @@
     .plugin-card:hover, .plugin-card.selected { border-color: var(--accent-blue); background: #202020; }
     .plugin-card-top { display: flex; align-items: center; justify-content: space-between; gap: 5px; min-width: 0; }
     .plugin-card-name { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 13px; }
-    .plugin-status { flex: 0 0 auto; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+    .plugin-status { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 10px; font-weight: 700; text-transform: uppercase; }
     .plugin-status.active { color: #00ff00; }
     .plugin-status.disabled { color: #ffb300; }
     .plugin-status.unloaded { color: #888; }
@@ -293,6 +308,7 @@
           <div class="video-card">
             <div class="video-viewport">
               <div id="live-datetime" class="camera-info-overlay">--/--/---- --:--:--</div>
+              <div id="camera-fps-indicator" class="camera-fps-overlay">FPS 0.0</div>
               <div id="camera-no-feed" class="camera-no-feed" aria-live="polite">
                 <div class="camera-no-feed-inner">
                   <div class="camera-no-feed-title">No Camera</div>

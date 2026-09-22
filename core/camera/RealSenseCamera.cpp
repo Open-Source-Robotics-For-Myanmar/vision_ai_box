@@ -157,6 +157,8 @@ void RealSenseCamera::set_processing_enabled(bool enabled) noexcept { processing
 
 bool RealSenseCamera::is_running() const noexcept { return running_; }
 
+double RealSenseCamera::measured_fps() const noexcept { return measured_fps_.load(std::memory_order_acquire); }
+
 bool RealSenseCamera::check_device_state() const noexcept
 {
     try {
@@ -207,6 +209,29 @@ void RealSenseCamera::register_frame_callback(std::function<void(const FrameCont
     frame_callbacks_.push_back(std::move(callback));
 }
 
+void RealSenseCamera::update_measured_fps()
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard lock(fps_mutex_);
+    frame_timestamps_.push_back(now);
+
+    while (!frame_timestamps_.empty() && now - frame_timestamps_.front() > std::chrono::seconds(2)) {
+        frame_timestamps_.pop_front();
+    }
+
+    if (frame_timestamps_.size() < 2) {
+        measured_fps_.store(0.0, std::memory_order_release);
+        return;
+    }
+
+    const double elapsed = std::chrono::duration<double>(now - frame_timestamps_.front()).count();
+    if (elapsed > 0.0) {
+        measured_fps_.store(static_cast<double>(frame_timestamps_.size()) / elapsed, std::memory_order_release);
+    } else {
+        measured_fps_.store(0.0, std::memory_order_release);
+    }
+}
+
 void RealSenseCamera::acquisition_loop()
 {
     std::uint64_t sequence = 0;
@@ -241,6 +266,7 @@ void RealSenseCamera::acquisition_loop()
 
             FrameContext next;
             next.sequence = ++sequence;
+            update_measured_fps();
             // Clone here so downstream async consumers never share the raw
             // librealsense buffer after the frameset goes out of scope.
             next.color = std::make_shared<cv::Mat>(raw_color.clone());

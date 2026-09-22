@@ -25,7 +25,7 @@ set(INCLUDE_DIR ${PROJECT_ROOT}/include)
 set(THIRDPARTY_ROOT ${PROJECT_ROOT}/thirdparty_libraries)
 
 # External Library Root Paths (Configurable via Cache)
-set(LIBREALSENSE_DIR "${PROJECT_ROOT}/../librealsense" CACHE PATH "Path to librealsense root")
+set(LIBREALSENSE_DIR "${PROJECT_ROOT}/../../librealsense" CACHE PATH "Path to librealsense root")
 
 
 # ============================================================

@@ -7,6 +7,8 @@
 #include <librealsense2/rs.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -31,6 +33,7 @@ public:
     bool latest_frame(FrameContext& frame);
     bool is_running() const noexcept;
     bool check_device_state() const noexcept;
+    double measured_fps() const noexcept;
 
 private:
     bool initialize();
@@ -41,6 +44,7 @@ private:
     void configure_sensor_defaults(const rs2::device& device);
     bool start_worker();
     void acquisition_loop();
+    void update_measured_fps();
 
     Logger& logger_;
     CameraSettings settings_;
@@ -61,4 +65,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> processing_enabled_{true};
     bool depth_enabled_{false};
+    mutable std::mutex fps_mutex_;
+    std::deque<std::chrono::steady_clock::time_point> frame_timestamps_;
+    std::atomic<double> measured_fps_{0.0};
 };

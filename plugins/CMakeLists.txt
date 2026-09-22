@@ -1,4 +1,5 @@
 add_subdirectory(face_recognition)
+add_subdirectory(example)
 # add_subdirectory(object_detection)
 # add_subdirectory(depth_estimation_with_DepthAnythings)
 # add_subdirectory(depth_estimation_with_DepthSensors)

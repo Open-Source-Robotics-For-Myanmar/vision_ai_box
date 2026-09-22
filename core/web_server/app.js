@@ -6,6 +6,7 @@ const viewQuery = document.querySelector('#view-query');
 const loginMessage = document.querySelector('#login-message');
 const cameraToggle = document.querySelector('#camera-toggle');
 const cameraStatus = document.querySelector('#camera-status');
+const cameraFpsIndicator = document.querySelector('#camera-fps-indicator');
 const stream = document.querySelector('#stream');
 const liveDatetime = document.querySelector('#live-datetime');
 const noCameraOverlay = document.querySelector('#camera-no-feed');
@@ -136,8 +137,19 @@ async function refreshStatus() {
   const connected = Boolean(status.connected);
   const running = Boolean(status.running);
   const error = Boolean(status.error);
+  const actualFps = Number(status.fps || 0);
 
   cameraToggle.checked = enabled;
+
+  if (cameraFpsIndicator) {
+    if (running && Number.isFinite(actualFps) && actualFps > 0) {
+      cameraFpsIndicator.textContent = `FPS ${actualFps.toFixed(1)}`;
+      cameraFpsIndicator.hidden = false;
+    } else {
+      cameraFpsIndicator.textContent = 'FPS 0.0';
+      cameraFpsIndicator.hidden = !enabled;
+    }
+  }
 
   if (running) {
     cameraStatus.textContent = 'Running';
@@ -315,10 +327,16 @@ function renderPluginList(plugins) {
     return;
   }
 
+  const activePluginName = normalizedPlugins.find(plugin => Boolean(plugin.enabled))?.name || selectedPluginName || '';
+  if (activePluginName) {
+    selectedPluginName = activePluginName;
+  }
+
   normalizedPlugins.forEach((plugin) => {
     const card = document.createElement('div');
     card.className = 'plugin-card';
-    card.classList.toggle('selected', plugin.name === selectedPluginName || Boolean(plugin.enabled));
+    const isSelected = Boolean(plugin.enabled) || (plugin.name === selectedPluginName && !normalizedPlugins.some(item => Boolean(item.enabled)));
+    card.classList.toggle('selected', isSelected);
     card.tabIndex = 0;
     card.setAttribute('role', 'button');
 
@@ -326,7 +344,7 @@ function renderPluginList(plugins) {
     radio.type = 'radio';
     radio.name = 'pluginSelection';
     radio.value = plugin.name || '';
-    radio.checked = Boolean(plugin.enabled);
+    radio.checked = isSelected;
 
     const text = document.createElement('span');
     text.textContent = plugin.name || 'Unknown plugin';
@@ -341,7 +359,8 @@ function renderPluginList(plugins) {
 
     const settings = plugin.settings || {};
     const status = document.createElement('span');
-    status.textContent = plugin.enabled ? 'Active' : plugin.loaded ? 'Disabled' : 'Unloaded';
+    const statusText = plugin.enabled ? 'Active' : plugin.loaded ? 'Disabled' : 'Unloaded';
+    status.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle;background:${plugin.enabled ? '#00ff00' : plugin.loaded ? '#ffb300' : '#888'}"></span>${statusText}`;
     status.className = `plugin-status ${plugin.enabled ? 'active' : plugin.loaded ? 'disabled' : 'unloaded'}`;
 
     top.appendChild(radio);
@@ -350,13 +369,16 @@ function renderPluginList(plugins) {
     card.appendChild(top);
 
     const selectPlugin = async () => {
+      if (plugin.enabled && plugin.name === selectedPluginName) {
+        return;
+      }
       try {
+        selectedPluginName = plugin.name;
         await request('/api/plugins', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: plugin.name, enabled: true })
         });
-        selectedPluginName = plugin.name;
         await refreshPluginList();
       } catch (error) {
         console.error('Unable to select plugin', error);
@@ -378,13 +400,20 @@ function renderPluginList(plugins) {
     pluginList.appendChild(card);
   });
 
-  const activePlugin = normalizedPlugins.find(plugin => plugin.name === selectedPluginName || plugin.enabled);
+  const activePlugin = normalizedPlugins.find(plugin => Boolean(plugin.enabled)) ||
+    normalizedPlugins.find(plugin => plugin.name === selectedPluginName) ||
+    null;
   if (disablePluginBtn) {
     disablePluginBtn.disabled = !activePlugin || !activePlugin.enabled;
   }
   if (activePlugin) {
     selectedPluginName = activePlugin.name;
     renderPluginSettings(activePlugin);
+  } else {
+    selectedPluginName = '';
+    if (pluginSettings) {
+      pluginSettings.innerHTML = '<div class="plugin-empty">Select a plugin to view its settings.</div>';
+    }
   }
 }
 
@@ -492,7 +521,7 @@ if (disablePluginBtn) {
       await request('/api/plugins/unload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: pluginName })
+        body: JSON.stringify({ name: '' })
       });
       selectedPluginName = '';
       await refreshPluginList();

@@ -141,6 +141,8 @@ bool UsbCamera::latest_frame(FrameContext& frame)
 
 bool UsbCamera::is_running() const noexcept { return running_; }
 
+double UsbCamera::measured_fps() const noexcept { return measured_fps_.load(std::memory_order_acquire); }
+
 bool UsbCamera::check_device_state() const noexcept
 {
     const int preferred = settings_.usb_device_index;
@@ -149,6 +151,29 @@ bool UsbCamera::check_device_state() const noexcept
     }
 
     return device_exists_for_index(USB_CAMERA_DEVICE_INDEX);
+}
+
+void UsbCamera::update_measured_fps()
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard lock(fps_mutex_);
+    frame_timestamps_.push_back(now);
+
+    while (!frame_timestamps_.empty() && now - frame_timestamps_.front() > std::chrono::seconds(2)) {
+        frame_timestamps_.pop_front();
+    }
+
+    if (frame_timestamps_.size() < 2) {
+        measured_fps_.store(0.0, std::memory_order_release);
+        return;
+    }
+
+    const double elapsed = std::chrono::duration<double>(now - frame_timestamps_.front()).count();
+    if (elapsed > 0.0) {
+        measured_fps_.store(static_cast<double>(frame_timestamps_.size()) / elapsed, std::memory_order_release);
+    } else {
+        measured_fps_.store(0.0, std::memory_order_release);
+    }
 }
 
 void UsbCamera::acquisition_loop()
@@ -179,6 +204,7 @@ void UsbCamera::acquisition_loop()
         FrameContext next;
         next.sequence = ++sequence;
         next.color = std::make_shared<cv::Mat>(frame);
+        update_measured_fps();
 
         {
             std::lock_guard lock(latest_frame_mutex_);
