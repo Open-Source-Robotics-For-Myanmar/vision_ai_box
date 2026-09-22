@@ -39,10 +39,13 @@
     .btn-login:hover { background: var(--accent-blue-hover); }
 
     /* Dashboard Layout Grid */
-    .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; align-items: start; }
-
-    /* Main camera and AI mode panels */
-    .left-panel { display: contents; }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+      grid-template-rows: auto 220px;
+      gap: 10px;
+      align-items: stretch;
+    }
     
     /* Video Box */
     .video-card { background: var(--panel-bg); border: 1px solid var(--panel-border); position: relative; }
@@ -126,8 +129,7 @@
     }
     .record-duration[hidden] { display: none; }
 
-    /* System Console */
-    .right-panel { grid-column: 1 / -1; height: 220px; min-height: 0; }
+    /* Log panels sit under the live view and plugin panel */
     .log-panel {
       background: var(--panel-bg);
       border: 1px solid var(--panel-border);
@@ -138,7 +140,7 @@
       min-height: 0;
     }
 
-    #log-terminal {
+    .log-terminal {
       background: #000;
       color: #00ff00;
       font-family: 'Consolas', 'Courier New', monospace;
@@ -159,27 +161,27 @@
       scrollbar-color: #4a4a4a #111;
     }
 
-    #log-terminal::-webkit-scrollbar {
+    #plugin-log-terminal { color: #7fd4ff; }
+
+    .log-terminal::-webkit-scrollbar {
       width: 10px;
       height: 10px;
     }
 
-    #log-terminal::-webkit-scrollbar-track {
+    .log-terminal::-webkit-scrollbar-track {
       background: #111;
       border-radius: 6px;
     }
 
-    #log-terminal::-webkit-scrollbar-thumb {
+    .log-terminal::-webkit-scrollbar-thumb {
       background: #4a4a4a;
       border-radius: 6px;
     }
 
-    #log-terminal::-webkit-scrollbar-thumb:hover {
+    .log-terminal::-webkit-scrollbar-thumb:hover {
       background: #666;
     }
 
-    /* Right Panel: Snapshots & Controls */
-    .right-panel { display: flex; flex-direction: column; gap: 10px; }
     .panel-box { background: var(--panel-bg); border: 1px solid var(--panel-border); padding: 10px; }
     .panel-title { font-size: 12px; font-weight: bold; color: var(--text-muted); border-bottom: 1px solid #2a2a2a; padding-bottom: 6px; margin-bottom: 10px; }
 
@@ -215,9 +217,16 @@
     .plugin-range-value { color: #fff; font-family: monospace; font-size: 12px; }
     .plugin-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .plugin-empty { color: var(--text-muted); padding: 18px 8px; font-size: 11px; }
-    .main-plugin-panel { margin: 0; max-width: none; overflow: hidden; }
-    .main-plugin-panel .plugin-layout { height: 238px; min-height: 0; }
-    @media (max-width: 760px) { .dashboard-grid { grid-template-columns: 1fr; } .main-plugin-panel { grid-column: auto; } .plugin-layout { grid-template-columns: 1fr; } .plugin-list { border-right: 0; border-bottom: 1px solid var(--panel-border); } }
+    .main-plugin-panel { margin: 0; max-width: none; overflow: hidden; display: flex; flex-direction: column; min-height: 0; height: 100%; }
+    .main-plugin-panel .plugin-layout { flex: 1; height: auto; min-height: 0; }
+    @media (max-width: 760px) {
+      .dashboard-grid { grid-template-columns: 1fr; grid-template-rows: none; }
+      .main-plugin-panel { grid-column: auto; height: auto; }
+      .main-plugin-panel .plugin-layout { height: 238px; }
+      .plugin-layout { grid-template-columns: 1fr; }
+      .plugin-list { border-right: 0; border-bottom: 1px solid var(--panel-border); }
+      .log-panel { height: 220px; }
+    }
 
     .query-shell { max-width: 1400px; margin: 18px auto; display: grid; gap: 14px; }
     .query-filter-bar {
@@ -308,9 +317,7 @@
     <div id="view-video">
       <div id="dashboard" class="dashboard-grid" hidden>
       
-        <!-- Left Column: Stream and AI mode -->
-        <div class="left-panel">
-          <div class="video-card">
+        <div class="video-card">
             <div class="video-viewport">
               <div id="live-datetime" class="camera-info-overlay">--/--/---- --:--:--</div>
               <div id="camera-fps-indicator" class="camera-fps-overlay">FPS 0.0</div>
@@ -344,8 +351,6 @@
             </div>
           </div>
 
-        </div>
-
         <div class="panel-box plugin-shell main-plugin-panel">
           <div class="plugin-header">
             <div class="panel-title">Choose AI Vision Mode</div>
@@ -362,13 +367,14 @@
           </div>
         </div>
 
-        <!-- Right Column: System Console -->
-        <div class="right-panel">
-          <div class="log-panel">
-            <div class="panel-title">System Console Logs</div>
-            <div id="log-terminal">Loading session logs...</div>
-          </div>
+        <div class="log-panel">
+          <div class="panel-title">System / Core Logs</div>
+          <div id="log-terminal" class="log-terminal">Loading session logs...</div>
+        </div>
 
+        <div class="log-panel">
+          <div class="panel-title">AI Plugin Logs</div>
+          <div id="plugin-log-terminal" class="log-terminal">No plugin logs yet.</div>
         </div>
 
       </div>
