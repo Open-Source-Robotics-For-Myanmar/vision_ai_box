@@ -60,6 +60,12 @@ public:
         condition_.notify_all();
     }
 
+    void clear()
+    {
+        std::lock_guard lock(mutex_);
+        frames_.clear();
+    }
+
 private:
     const std::size_t capacity_;
     std::mutex mutex_;

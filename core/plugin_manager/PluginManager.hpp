@@ -3,6 +3,7 @@
 #include "IPlugin.hpp"
 #include "FrameQueue.hpp"
 #include "Logger.hpp"
+#include "PluginState.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -16,6 +17,7 @@ struct PluginInstance {
     void* handle{nullptr};
     IPlugin* plugin{nullptr};
     DestroyPluginFn destroy_fn{nullptr};
+    PluginState state{PluginState::Loaded};
     ~PluginInstance();
     PluginInstance() = default;
     PluginInstance(const PluginInstance&) = delete;
@@ -47,8 +49,10 @@ private:
 
     Logger& logger_;
     mutable std::mutex mutex_;
+    std::mutex lifecycle_mutex_;
     std::unordered_map<std::string, std::shared_ptr<PluginInstance>> plugins_;
     std::unordered_map<std::string, std::filesystem::path> plugin_paths_;
+    std::string active_plugin_name_;
     std::filesystem::path plugin_directory_;
     FrameQueue frame_queue_{2};
     std::thread processing_thread_;

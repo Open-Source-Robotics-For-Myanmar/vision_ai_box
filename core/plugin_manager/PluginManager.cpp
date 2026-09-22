@@ -26,6 +26,7 @@ PluginManager::~PluginManager()
 
 bool PluginManager::load_plugin(const std::filesystem::path& plugin_path)
 {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
     if (!std::filesystem::exists(plugin_path)) {
         logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Plugin file not found: " + plugin_path.string());
         return false;
@@ -57,7 +58,13 @@ bool PluginManager::load_plugin(const std::filesystem::path& plugin_path)
     plugin_ptr->init({});
     plugin_ptr->set_enabled(false);
 
-    const std::string name = plugin_ptr->get_name();
+    const std::string name = plugin_path.stem().string();
+    if (name.empty()) {
+        destroy_fn(plugin_ptr);
+        dlclose(handle);
+        logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Plugin file has no valid stem: " + plugin_path.string());
+        return false;
+    }
     auto loaded = std::make_shared<PluginInstance>();
     loaded->handle = handle;
     loaded->plugin = plugin_ptr;
@@ -66,8 +73,9 @@ bool PluginManager::load_plugin(const std::filesystem::path& plugin_path)
     {
         std::lock_guard lock(mutex_);
         if (plugins_.count(name)) {
-            logger_.log(LogLevel::WARN, "PLUGIN_MGR", "Overwriting existing plugin: " + name);
-            plugins_.erase(name);
+            logger_.log(LogLevel::WARN, "PLUGIN_MGR", "Plugin already loaded: " + name);
+            loaded.reset();
+            return true;
         }
         plugins_[name] = std::move(loaded);
     }
@@ -96,15 +104,26 @@ bool PluginManager::load_plugin_by_name(const std::string& plugin_name)
 
 bool PluginManager::unload_plugin(const std::string& plugin_name)
 {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    frame_queue_.clear();
     std::shared_ptr<PluginInstance> removed;
     {
         std::lock_guard lock(mutex_);
         auto it = plugins_.find(plugin_name);
         if (it == plugins_.end()) {
-            return false;
+            return plugin_paths_.contains(plugin_name);
         }
         removed = std::move(it->second);
         plugins_.erase(it);
+        if (active_plugin_name_ == plugin_name) {
+            active_plugin_name_.clear();
+        }
+        if (removed) {
+            removed->state = PluginState::Unloaded;
+            if (removed->plugin) {
+                removed->plugin->set_enabled(false);
+            }
+        }
     }
 
     logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Plugin unloaded: " + plugin_name);
@@ -114,10 +133,19 @@ bool PluginManager::unload_plugin(const std::string& plugin_name)
 
 bool PluginManager::unload_all_plugins()
 {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
     std::vector<std::shared_ptr<PluginInstance>> removed;
+    frame_queue_.clear();
     {
         std::lock_guard lock(mutex_);
+        active_plugin_name_.clear();
         for (auto it = plugins_.begin(); it != plugins_.end(); ) {
+            if (it->second) {
+                it->second->state = PluginState::Unloaded;
+                if (it->second->plugin) {
+                    it->second->plugin->set_enabled(false);
+                }
+            }
             removed.push_back(std::move(it->second));
             it = plugins_.erase(it);
         }
@@ -198,18 +226,9 @@ void PluginManager::processing_loop()
 
 void PluginManager::process_frame_now(const FrameContext& frame)
 {
-    std::vector<std::shared_ptr<PluginInstance>> active_plugins;
-    {
-        std::lock_guard lock(mutex_);
-        for (const auto& [name, instance] : plugins_) {
-            if (instance && instance->plugin && instance->plugin->is_enabled()) {
-                active_plugins.push_back(instance);
-            }
-        }
-    }
-
-    for (const auto& instance : active_plugins) {
-        if (instance && instance->plugin) {
+    std::lock_guard lock(mutex_);
+    for (const auto& [name, instance] : plugins_) {
+        if (instance && instance->plugin && instance->state == PluginState::Active) {
             instance->plugin->process(frame);
         }
     }
@@ -226,57 +245,42 @@ void PluginManager::update_plugin_settings(const std::string& name, const nlohma
 
 bool PluginManager::set_plugin_enabled(const std::string& name, bool enabled)
 {
-    std::lock_guard lock(mutex_);
-    auto it = plugins_.find(name);
-    if (it == plugins_.end() || !it->second || !it->second->plugin) {
-        return false;
+    if (enabled) {
+        return select_plugin(name);
     }
 
-    it->second->plugin->set_enabled(enabled);
-    return true;
+    return unload_plugin(name);
 }
 
 bool PluginManager::select_plugin(const std::string& name)
 {
-    std::vector<std::shared_ptr<PluginInstance>> to_remove;
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
     {
         std::lock_guard lock(mutex_);
         if (!plugins_.contains(name)) {
             return false;
         }
 
-        bool already_active = false;
-        for (const auto& [plugin_name, instance] : plugins_) {
-            if (plugin_name == name && instance && instance->plugin && instance->plugin->is_enabled()) {
-                already_active = true;
-                break;
+        if (active_plugin_name_ == name && plugins_.size() == 1) {
+            const auto& active = plugins_.find(name)->second;
+            if (active && active->state == PluginState::Active && active->plugin && active->plugin->is_enabled()) {
+                return true;
             }
         }
 
-        if (already_active) {
-            for (auto& [plugin_name, instance] : plugins_) {
-                if (plugin_name != name && instance && instance->plugin) {
-                    instance->plugin->set_enabled(false);
-                }
-            }
-            return true;
-        }
-
-        for (auto it = plugins_.begin(); it != plugins_.end(); ) {
-            if (it->first != name) {
-                to_remove.push_back(std::move(it->second));
-                it = plugins_.erase(it);
+        for (auto& [plugin_name, instance] : plugins_) {
+            if (!instance || !instance->plugin) {
                 continue;
             }
-            if (it->second && it->second->plugin) {
-                it->second->plugin->set_enabled(true);
+            if (plugin_name == name) {
+                instance->plugin->set_enabled(true);
+                instance->state = PluginState::Active;
+            } else {
+                instance->plugin->set_enabled(false);
+                instance->state = PluginState::Loaded;
             }
-            ++it;
         }
-    }
-
-    for (auto& removed : to_remove) {
-        removed.reset();
+        active_plugin_name_ = name;
     }
     return true;
 }
@@ -291,7 +295,8 @@ nlohmann::json PluginManager::get_all_plugin_info() const
             result.push_back({
                 {"name", name},
                 {"loaded", true},
-                {"enabled", loaded->second->plugin->is_enabled()},
+                {"enabled", loaded->second->state == PluginState::Active},
+                {"state", plugin_state_name(loaded->second->state)},
                 {"settings", loaded->second->plugin->get_settings()}
             });
         } else {
@@ -299,6 +304,7 @@ nlohmann::json PluginManager::get_all_plugin_info() const
                 {"name", name},
                 {"loaded", false},
                 {"enabled", false},
+                {"state", plugin_state_name(PluginState::Unloaded)},
                 {"settings", nlohmann::json::object()}
             });
         }

@@ -518,13 +518,15 @@ if (disablePluginBtn) {
     if (!window.confirm(`Disable and unload ${pluginName}?`)) return;
     disablePluginBtn.disabled = true;
     try {
-      await request('/api/plugins/unload', {
+      const response = await request('/api/plugins/unload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: '' })
+        body: JSON.stringify({ name: pluginName })
       });
-      selectedPluginName = '';
-      await refreshPluginList();
+      if (response && response.success) {
+        selectedPluginName = '';
+        await refreshPluginList();
+      }
     } catch (error) {
       console.error('Unable to disable plugin', error);
       disablePluginBtn.disabled = false;
