@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FrameContext.hpp"
+#include "FrameQueue.hpp"
 
 #ifdef CAMERA_USB
 #include "UsbCamera.hpp"
@@ -42,6 +43,7 @@ public:
 private:
     void open_writer_if_needed(const cv::Mat& frame);
     void close_writer();
+    void recording_loop();
     static std::string make_timestamp();
     static std::string make_recording_stamp();
     static int resolve_fourcc();
@@ -57,5 +59,6 @@ private:
     std::chrono::steady_clock::time_point recording_start_time_{};
     std::string current_recording_file_;
     cv::VideoWriter writer_;
+    FrameQueue recording_queue_{8};
 };
 

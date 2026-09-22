@@ -12,7 +12,16 @@ PluginInstance::~PluginInstance()
     }
 }
 
-PluginManager::PluginManager(Logger& logger) : logger_(logger) {}
+PluginManager::PluginManager(Logger& logger)
+    : logger_(logger), processing_thread_(&PluginManager::processing_loop, this) {}
+
+PluginManager::~PluginManager()
+{
+    frame_queue_.close();
+    if (processing_thread_.joinable()) {
+        processing_thread_.join();
+    }
+}
 
 
 bool PluginManager::load_plugin(const std::filesystem::path& plugin_path)
@@ -154,6 +163,19 @@ void PluginManager::scan_plugins()
 }
 
 void PluginManager::process_frame(const FrameContext& frame)
+{
+    frame_queue_.push(frame);
+}
+
+void PluginManager::processing_loop()
+{
+    FrameContext frame;
+    while (frame_queue_.pop(frame)) {
+        process_frame_now(frame);
+    }
+}
+
+void PluginManager::process_frame_now(const FrameContext& frame)
 {
     std::vector<std::shared_ptr<PluginInstance>> active_plugins;
     {

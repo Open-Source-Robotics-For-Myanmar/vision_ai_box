@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <opencv2/imgproc.hpp>
 #include <netinet/in.h>
 #include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -143,6 +145,126 @@ bool send_all(int socket, const std::string& data)
     return true;
 }
 
+bool send_all(int socket, const std::vector<uchar>& data)
+{
+    std::size_t sent = 0;
+    while (sent < data.size()) {
+        const ssize_t count = send(socket, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+        if (count <= 0) return false;
+        sent += static_cast<std::size_t>(count);
+    }
+    return true;
+}
+
+cv::Mat resize_for_stream(const cv::Mat& source, const StreamProfile& profile)
+{
+    const int width_limit = std::max(1, profile.max_width);
+    const int height_limit = std::max(1, profile.max_height);
+    const double scale = std::min(
+        static_cast<double>(width_limit) / source.cols,
+        static_cast<double>(height_limit) / source.rows);
+
+    if (scale >= 1.0) {
+        return source;
+    }
+
+    const cv::Size size(
+        std::max(1, static_cast<int>(std::lround(source.cols * scale))),
+        std::max(1, static_cast<int>(std::lround(source.rows * scale))));
+    cv::Mat resized;
+    cv::resize(source, resized, size, 0.0, 0.0, cv::INTER_AREA);
+    return resized;
+}
+
+StreamProfile profile_for_level(int level, const cv::Size& source_size)
+{
+    switch (std::clamp(level, 0, 3)) {
+    case 0: return StreamProfile::very_low();
+    case 1: return StreamProfile::low();
+    case 2: return StreamProfile::medium();
+    default: return StreamProfile::high(source_size);
+    }
+}
+
+struct StreamController
+{
+    int level{2};
+    int jpeg_quality{65};
+    int poor_samples{0};
+    int good_samples{0};
+    std::chrono::steady_clock::time_point last_upgrade{};
+    StreamMetrics metrics{};
+
+    void downgrade_for_send_delay(const StreamProfile& current, double send_ms)
+    {
+        if (send_ms <= 1000.0 / current.target_fps * 1.25) {
+            return;
+        }
+        poor_samples = 3;
+        good_samples = 0;
+    }
+
+    StreamProfile profile(const cv::Size& source_size) const
+    {
+        StreamProfile selected = profile_for_level(level, source_size);
+        selected.jpeg_quality = jpeg_quality;
+        return selected.clamped();
+    }
+
+    void observe(std::size_t bytes, double send_ms, const StreamProfile& current)
+    {
+        metrics.frames_sent++;
+        metrics.bytes_sent += bytes;
+        metrics.last_send_ms = send_ms;
+
+        const double frame_interval_ms = 1000.0 / current.target_fps;
+        const double required_bits_per_second = static_cast<double>(bytes) * 8.0 * current.target_fps;
+        const double observed_bits_per_second = send_ms > 0.0
+            ? static_cast<double>(bytes) * 8.0 * 1000.0 / send_ms
+            : required_bits_per_second;
+        const bool congested = send_ms > frame_interval_ms * 1.25 ||
+            observed_bits_per_second < required_bits_per_second * 1.10;
+
+        if (congested) {
+            ++poor_samples;
+            good_samples = 0;
+            if (poor_samples >= 3) {
+                if (jpeg_quality > 40) {
+                    jpeg_quality = std::max(40, jpeg_quality - 10);
+                } else if (level > 0) {
+                    --level;
+                    jpeg_quality = 60;
+                }
+                poor_samples = 0;
+                last_upgrade = std::chrono::steady_clock::now();
+            }
+            return;
+        }
+
+        poor_samples = 0;
+        if (send_ms < frame_interval_ms * 0.50 &&
+            observed_bits_per_second > required_bits_per_second * 1.80) {
+            ++good_samples;
+        } else {
+            good_samples = 0;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (good_samples >= 30 && now - last_upgrade >= std::chrono::seconds(10)) {
+            if (jpeg_quality < 80) {
+                jpeg_quality = std::min(80, jpeg_quality + 5);
+            } else if (level < 3) {
+                ++level;
+                jpeg_quality = 70;
+            } else {
+                return;
+            }
+            good_samples = 0;
+            last_upgrade = now;
+        }
+    }
+};
+
 std::string header_value(const std::string& request, const std::string& name)
 {
     const std::string prefix = name + ": ";
@@ -258,6 +380,35 @@ WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& tog
     });
 }
 
+std::shared_ptr<std::vector<uchar>> WebServer::encoded_frame(
+    std::uint64_t sequence, const cv::Mat& source, const StreamProfile& profile,
+    double& encode_ms)
+{
+    std::lock_guard lock(encoded_cache_mutex_);
+    if (encoded_cache_data_ && encoded_cache_sequence_ == sequence &&
+        encoded_cache_profile_.max_width == profile.max_width &&
+        encoded_cache_profile_.max_height == profile.max_height &&
+        encoded_cache_profile_.jpeg_quality == profile.jpeg_quality) {
+        encode_ms = 0.0;
+        return encoded_cache_data_;
+    }
+
+    const auto encode_start = std::chrono::steady_clock::now();
+    const cv::Mat stream_frame = resize_for_stream(source, profile);
+    auto encoded = std::make_shared<std::vector<uchar>>();
+    if (!cv::imencode(".jpg", stream_frame, *encoded,
+                      {cv::IMWRITE_JPEG_QUALITY, profile.jpeg_quality})) {
+        return {};
+    }
+
+    encode_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - encode_start).count();
+    encoded_cache_sequence_ = sequence;
+    encoded_cache_profile_ = profile;
+    encoded_cache_data_ = encoded;
+    return encoded;
+}
+
 WebServer::~WebServer()
 {
     stop();
@@ -266,6 +417,7 @@ WebServer::~WebServer()
 bool WebServer::start(std::uint16_t port)
 {
     if (running_.exchange(true)) return true;
+    latest_stream_frame_.start();
 
     listen_socket_ = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_socket_ < 0) {
@@ -299,6 +451,7 @@ void WebServer::stop() noexcept
 {
     if (!running_.exchange(false)) return;
     stream_generation_.fetch_add(1, std::memory_order_release);
+    latest_stream_frame_.stop();
     base_system_.stop_recording();
     if (listen_socket_ >= 0) {
         shutdown(listen_socket_, SHUT_RDWR);
@@ -465,7 +618,7 @@ bool WebServer::apply_camera_settings(const CameraSettings& settings)
 
 void WebServer::handle_client(int client_socket)
 {
-    timeval send_timeout{1, 0};
+    timeval send_timeout{5, 0};
     setsockopt(client_socket, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
     std::string request;
     char buffer[4096];
@@ -745,25 +898,50 @@ void WebServer::handle_client(int client_socket)
         const std::uint64_t stream_generation = stream_generation_.load(std::memory_order_acquire);
         const std::string header = "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
         if (send_all(client_socket, header)) {
+            std::uint64_t last_sequence = 0;
+            StreamController controller;
+            auto next_frame_deadline = std::chrono::steady_clock::now();
             while (running_ && camera_.is_running() &&
                    stream_generation == stream_generation_.load(std::memory_order_acquire)) {
-                const std::shared_ptr<cv::Mat> frame_ptr = latest_stream_frame_.latest();
-                if (!frame_ptr || frame_ptr->empty()) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::shared_ptr<cv::Mat> frame_ptr;
+                std::uint64_t sequence = 0;
+                if (!latest_stream_frame_.wait_for_newer(last_sequence, frame_ptr, sequence)) {
                     continue;
                 }
+                if (sequence > last_sequence + 1) {
+                    controller.metrics.frames_skipped += sequence - last_sequence - 1;
+                }
+                last_sequence = sequence;
 
-                std::vector<uchar> encoded;
-                if (!cv::imencode(".jpg", *frame_ptr, encoded, {cv::IMWRITE_JPEG_QUALITY, 80})) break;
+                const StreamProfile profile = controller.profile(frame_ptr->size());
+                double encode_ms = 0.0;
+                const std::shared_ptr<std::vector<uchar>> encoded =
+                    encoded_frame(sequence, *frame_ptr, profile, encode_ms);
+                if (!encoded) break;
+                controller.metrics.last_encode_ms = encode_ms;
 
                 const std::string prefix = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " +
-                    std::to_string(encoded.size()) + "\r\n\r\n";
-                const std::string jpeg(reinterpret_cast<const char*>(encoded.data()), encoded.size());
-                if (!send_all(client_socket, prefix) || !send_all(client_socket, jpeg) ||
+                    std::to_string(encoded->size()) + "\r\n\r\n";
+                const auto send_start = std::chrono::steady_clock::now();
+                if (!send_all(client_socket, prefix) || !send_all(client_socket, *encoded) ||
                     !send_all(client_socket, "\r\n")) break;
+                const double send_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - send_start).count();
+                controller.observe(encoded->size(), send_ms, profile);
+                controller.downgrade_for_send_delay(profile, send_ms);
 
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                next_frame_deadline = std::max(next_frame_deadline, std::chrono::steady_clock::now());
+                next_frame_deadline += std::chrono::milliseconds(1000 / profile.target_fps);
+                std::this_thread::sleep_until(next_frame_deadline);
             }
+            logger_.log(LogLevel::INFO, "WEB_SERVER",
+                "Stream ended: frames=" + std::to_string(controller.metrics.frames_sent) +
+                ", skipped=" + std::to_string(controller.metrics.frames_skipped) +
+                ", bytes=" + std::to_string(controller.metrics.bytes_sent) +
+                ", quality=" + std::to_string(controller.jpeg_quality) +
+                ", level=" + std::to_string(controller.level) +
+                ", encode_ms=" + std::to_string(controller.metrics.last_encode_ms) +
+                ", send_ms=" + std::to_string(controller.metrics.last_send_ms));
         }
     } else {
         send_all(client_socket, http_response(404, "application/json", json_response({{"error", "not found"}})));

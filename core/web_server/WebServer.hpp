@@ -3,10 +3,14 @@
 #include "BaseSystem.hpp"
 #include "CameraSettings.hpp"
 #include "FrameContext.hpp"
+#include "StreamProfile.hpp"
 #include "Toggles.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -24,18 +28,30 @@ public:
         }
         std::lock_guard lock(mutex_);
         latest_ = frame.color;
+        latest_sequence_ = frame.sequence;
+        condition_.notify_all();
     }
 
-    std::shared_ptr<cv::Mat> latest() const
+    bool wait_for_newer(std::uint64_t sequence, std::shared_ptr<cv::Mat>& frame,
+                        std::uint64_t& next_sequence)
     {
-        std::lock_guard lock(mutex_);
-        return latest_;
+        std::unique_lock lock(mutex_);
+        condition_.wait_for(lock, std::chrono::milliseconds(100), [this, sequence] {
+            return stopped_ || (latest_ && latest_sequence_ > sequence);
+        });
+        if (stopped_ || !latest_ || latest_sequence_ <= sequence) {
+            return false;
+        }
+        frame = latest_;
+        next_sequence = latest_sequence_;
+        return true;
     }
 
     void pop()
     {
         std::lock_guard lock(mutex_);
         latest_.reset();
+        latest_sequence_ = 0;
     }
 
     void clear()
@@ -43,9 +59,27 @@ public:
         pop();
     }
 
+    void start()
+    {
+        std::lock_guard lock(mutex_);
+        stopped_ = false;
+    }
+
+    void stop()
+    {
+        {
+            std::lock_guard lock(mutex_);
+            stopped_ = true;
+        }
+        condition_.notify_all();
+    }
+
 private:
     mutable std::mutex mutex_;
+    std::condition_variable condition_;
     std::shared_ptr<cv::Mat> latest_;
+    std::uint64_t latest_sequence_{0};
+    bool stopped_{false};
 };
 
 class PluginManager;
@@ -70,6 +104,9 @@ private:
     void stop_camera();
     CameraSettings camera_settings() const;
     bool apply_camera_settings(const CameraSettings& settings);
+    std::shared_ptr<std::vector<uchar>> encoded_frame(
+        std::uint64_t sequence, const cv::Mat& source, const StreamProfile& profile,
+        double& encode_ms);
 
 
     // Member variables
@@ -92,8 +129,11 @@ private:
     std::vector<int> client_sockets_;
     std::vector<std::thread> client_threads_;
     mutable std::mutex sessions_mutex_;
-    mutable std::mutex stream_mutex_;
     FrameBuffer latest_stream_frame_;
+    mutable std::mutex encoded_cache_mutex_;
+    std::uint64_t encoded_cache_sequence_{0};
+    StreamProfile encoded_cache_profile_{};
+    std::shared_ptr<std::vector<uchar>> encoded_cache_data_;
 
     // Browsers commonly open several simultaneous HTTP connections for the UI,
     // polling, and the MJPEG stream, so this must be higher than the single-tab case.

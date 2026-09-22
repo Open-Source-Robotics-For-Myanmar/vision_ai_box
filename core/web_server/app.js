@@ -3,7 +3,6 @@ const loginContainer = document.querySelector('#login-container');
 const dashboard = document.querySelector('#dashboard');
 const viewVideo = document.querySelector('#view-video');
 const viewQuery = document.querySelector('#view-query');
-const viewOptions = document.querySelector('#view-options');
 const loginMessage = document.querySelector('#login-message');
 const cameraToggle = document.querySelector('#camera-toggle');
 const cameraStatus = document.querySelector('#camera-status');
@@ -16,9 +15,6 @@ const restartRecordBtn = document.querySelector('#restart-record-btn');
 const captureBtn = document.querySelector('#capture-btn');
 const recordStatusIndicator = document.querySelector('#record-status-indicator');
 const recordStatusText = document.querySelector('#record-status-text');
-const cameraSettingsForm = document.querySelector('#camera-settings-form');
-const cancelSettingsBtn = document.querySelector('#cancel-settings-btn');
-const usbDeviceField = document.querySelector('#usb-device-field');
 const querySearchInput = document.querySelector('#query-search');
 const queryDateFilter = document.querySelector('#query-date-filter');
 const queryTypeFilter = document.querySelector('#query-type-filter');
@@ -28,13 +24,12 @@ const pluginSettings = document.querySelector('#plugin-settings');
 const scanPluginsBtn = document.querySelector('#scan-plugins-btn');
 const disablePluginBtn = document.querySelector('#disable-plugin-btn');
 const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
-
 let queryMedia = [];
 let expandedGroupIds = new Set();
 let selectedPluginName = '';
-
 let toggleRequestActive = false;
 let streamActive = false;
+let streamReconnectTimerId = null;
 let recordingRequestActive = false;
 let recordingTimerId = null;
 let recordingStartedAt = null;
@@ -223,32 +218,34 @@ function canRecordWithCamera() {
   return state === 'Running' || recordingState === 'Recording';
 }
 
+function reconnectStream() {
+  if (!streamActive || !stream || streamReconnectTimerId) return;
+
+  streamReconnectTimerId = setTimeout(() => {
+    streamReconnectTimerId = null;
+    if (!streamActive) return;
+    stream.src = '/api/camera/stream?generation=' + Date.now();
+  }, 500);
+}
+
 function showView(viewName) {
   const isVideo = viewName === 'video';
   const isQuery = viewName === 'query';
-  const isOptions = viewName === 'options';
 
   viewVideo.hidden = !isVideo;
   if (viewQuery) viewQuery.hidden = !isQuery;
-  viewOptions.hidden = !isOptions;
 
   navTabs.forEach(tab => {
     const label = tab.textContent.trim();
-    const active = label === (isVideo ? 'Main' : isQuery ? 'Query data' : isOptions ? 'Options' : 'Main');
+    const active = label === (isVideo ? 'Main' : isQuery ? 'Query data' : 'Main');
     tab.classList.toggle('active', active);
   });
-
   if (isQuery) {
     fetchQueryMedia().catch(error => {
       console.error('Unable to load query data', error);
     });
   }
 
-  if (isOptions && !viewOptions.dataset.loaded) {
-    loadCameraSettings().catch(() => {
-      console.error('Unable to load camera settings');
-    });
-  }
 }
 
 function resolveOptionValue(option) {
@@ -681,94 +678,6 @@ async function fetchQueryMedia() {
   }
 }
 
-async function loadCameraSettings() {
-  const response = await request('/api/camera/settings');
-  const settings = response.settings ?? response;
-  const form = cameraSettingsForm;
-  const cameraType = response.camera_type || 'usb';
-  const available = response.available_settings || {};
-  const availableResolutions = Array.isArray(available.color_resolutions) ? available.color_resolutions : [{ width: 640, height: 480, label: '640x480' }];
-  const availableFps = Array.isArray(available.color_fps_options) ? available.color_fps_options : [30, 15];
-  const colorWidth = Number.isFinite(Number(settings.color_width)) ? Number(settings.color_width) : 640;
-  const colorHeight = Number.isFinite(Number(settings.color_height)) ? Number(settings.color_height) : 480;
-  const depthWidth = Number.isFinite(Number(settings.depth_width)) ? Number(settings.depth_width) : 640;
-  const depthHeight = Number.isFinite(Number(settings.depth_height)) ? Number(settings.depth_height) : 480;
-
-  populateSelect(form.color_resolution, availableResolutions, `${colorWidth}x${colorHeight}`);
-  populateSelect(form.color_fps, availableFps, String(Number.isFinite(Number(settings.color_fps)) ? Number(settings.color_fps) : 30));
-
-  if (cameraType === 'realsense') {
-    const depthContainer = document.querySelector('#depth-settings');
-    if (depthContainer) depthContainer.hidden = false;
-    populateSelect(form.depth_resolution, Array.isArray(available.depth_resolutions) ? available.depth_resolutions : [{ width: 640, height: 480, label: '640x480' }], `${depthWidth}x${depthHeight}`);
-    populateSelect(form.depth_fps, Array.isArray(available.depth_fps_options) ? available.depth_fps_options : [30, 15], String(Number.isFinite(Number(settings.depth_fps)) ? Number(settings.depth_fps) : 30));
-  } else {
-    const depthContainer = document.querySelector('#depth-settings');
-    if (depthContainer) depthContainer.hidden = true;
-  }
-
-  form.auto_exposure.value = String(Boolean(settings.auto_exposure));
-  form.auto_white_balance.value = String(Boolean(settings.auto_white_balance));
-  if (form.usb_device_index) {
-    form.usb_device_index.value = settings.usb_device_index ?? -1;
-  }
-
-  const showUsbField = settings.usb_device_index !== undefined;
-  usbDeviceField.style.display = showUsbField ? 'grid' : 'none';
-  viewOptions.dataset.loaded = 'true';
-}
-
-async function submitCameraSettings(event) {
-  event.preventDefault();
-
-  const applyButton = event.submitter || cameraSettingsForm.querySelector('button[type="submit"]');
-  if (applyButton) {
-    applyButton.disabled = true;
-    applyButton.textContent = 'Restarting camera...';
-  }
-
-  try {
-    const selectedResolution = cameraSettingsForm.color_resolution.value || '640x480';
-    const [width, height] = selectedResolution.split('x').map(Number);
-
-    const payload = {
-      color_width: Number(width),
-      color_height: Number(height),
-      color_fps: Number(cameraSettingsForm.color_fps.value),
-      auto_exposure: cameraSettingsForm.auto_exposure.value === 'true',
-      auto_white_balance: cameraSettingsForm.auto_white_balance.value === 'true'
-    };
-
-    if (cameraSettingsForm.depth_resolution && !cameraSettingsForm.depth_resolution.closest('#depth-settings').hidden) {
-      const selectedDepthResolution = cameraSettingsForm.depth_resolution.value || '640x480';
-      const [depthWidth, depthHeight] = selectedDepthResolution.split('x').map(Number);
-      payload.depth_enabled = true;
-      payload.depth_width = Number(depthWidth);
-      payload.depth_height = Number(depthHeight);
-      payload.depth_fps = Number(cameraSettingsForm.depth_fps.value);
-    }
-
-    if (cameraSettingsForm.usb_device_index) {
-      payload.usb_device_index = Number(cameraSettingsForm.usb_device_index.value);
-    }
-
-    await request('/api/camera/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    showView('video');
-    alert('Camera settings updated.');
-  } finally {
-    if (applyButton) {
-      applyButton.disabled = false;
-      applyButton.textContent = 'Apply Settings';
-    }
-  }
-}
-
 // Initialize Dashboard & Timers
 startLiveClock();
 
@@ -777,7 +686,6 @@ navTabs.forEach(tab => {
     const label = tab.textContent.trim();
     if (label === 'Main') showView('video');
     if (label === 'Query data') showView('query');
-    if (label === 'Options') showView('options');
   });
 });
 
@@ -797,6 +705,8 @@ if (queryDateFilter) {
   });
 }
 if (queryTypeFilter) queryTypeFilter.addEventListener('change', applyQueryFilters);
+
+stream.addEventListener('error', reconnectStream);
 
 if (queryMediaList) {
   queryMediaList.addEventListener('click', event => {
@@ -824,9 +734,6 @@ if (queryMediaList) {
     applyQueryFilters();
   });
 }
-
-cameraSettingsForm.addEventListener('submit', submitCameraSettings);
-cancelSettingsBtn.addEventListener('click', () => showView('video'));
 
 if (window.location.pathname === '/dashboard') {
   loginContainer.hidden = true;

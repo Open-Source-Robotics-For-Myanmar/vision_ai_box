@@ -186,14 +186,19 @@ nlohmann::json BaseSystem::discover_media_library() const
 BaseSystem::BaseSystem(Logger& logger, SelectedCamera& camera)
     : logger_(logger), camera_(camera)
 {
+    recording_thread_ = std::thread(&BaseSystem::recording_loop, this);
     camera_.register_frame_callback([this](const FrameContext& frame) {
-        on_frame_received(frame);
+        recording_queue_.push(frame);
     });
 }
 
 BaseSystem::~BaseSystem()
 {
     stop_recording();
+    recording_queue_.close();
+    if (recording_thread_.joinable()) {
+        recording_thread_.join();
+    }
 }
 
 bool BaseSystem::start_recording()
@@ -283,6 +288,9 @@ void BaseSystem::on_frame_received(const FrameContext& frame)
     }
 
     std::lock_guard lock(writer_mutex_);
+    if (!recording_active_.load(std::memory_order_acquire)) {
+        return;
+    }
     open_writer_if_needed(*frame.color);
     if (!writer_.isOpened()) {
         return;
@@ -290,6 +298,14 @@ void BaseSystem::on_frame_received(const FrameContext& frame)
 
     writer_.write(*frame.color);
     last_written_sequence_.store(sequence, std::memory_order_release);
+}
+
+void BaseSystem::recording_loop()
+{
+    FrameContext frame;
+    while (recording_queue_.pop(frame)) {
+        on_frame_received(frame);
+    }
 }
 
 bool BaseSystem::is_recording() const noexcept

@@ -69,99 +69,137 @@ it the active plugin. Only the selected plugin receives frames.
 
 ### Worker Threads
 
-The project uses several background threads to decouple camera capture, web I/O, and recording work from the main application loop.
+The project uses several background threads to decouple camera capture, web I/O,
+and recording work from the main application loop.
 
 1. Main service loop
    - `main()` creates the camera object and starts the web server.
-   - It then initializes the camera once, starts the monitor thread, and enters a `while (toggles.running)` loop.
-   - This loop only waits and listens for shutdown signals; it does not perform heavy processing.
+   - It then initializes the camera once, starts the monitor thread, and enters
+     a `while (toggles.running)` loop.
+   - This loop only waits and listens for shutdown signals; it does not perform
+     heavy processing.
 
 2. Camera reconnect monitor thread
    - `camera_reconnect_loop()` runs as a background thread.
-   - It checks `ServiceToggles::camera_enabled`, `camera.check_device_state()`, and `camera.is_running()` in a loop.
+   - It checks `ServiceToggles::camera_enabled`, `camera.check_device_state()`,
+     and `camera.is_running()` in a loop.
    - If the camera is disabled, it stops the device and clears processing flags.
-   - If the camera is unplugged while running, it stops capture and sets `camera_error = true`.
-   - If the device becomes available again, it calls `camera.start()` and re-enables processing.
+   - If the camera is unplugged while running, it stops capture and sets
+     `camera_error = true`.
+   - If the device becomes available again, it calls `camera.start()` and
+     re-enables processing.
 
 3. Web server accept thread
-   - `WebServer::start()` creates a listening socket and starts `accept_loop()` in a dedicated thread.
-   - `accept_loop()` repeatedly calls `accept()`, then spawns a new thread for each connected client via `handle_client()`.
+   - `WebServer::start()` creates a listening socket and starts `accept_loop()`
+     in a dedicated thread.
+   - `accept_loop()` repeatedly calls `accept()`, then spawns a new thread for
+     each connected client via `handle_client()`.
 
 4. Client request worker threads
-   - Each client connection is handled by `WebServer::handle_client()` in its own thread.
-   - The handler parses the HTTP request, authenticates the session, and dispatches to endpoints such as:
-     - `/api/login`
-     - `/api/camera/status`
-     - `/api/camera/start`
-     - `/api/camera/stop`
-     - `/api/camera/stream`
-     - `/api/record/start`
-     - `/api/record/stop`
-     - `/api/record/restart`
-     - `/api/record/capture`
-   - It also applies camera settings or records data depending on the requested route.
+   - Each client connection is handled by `WebServer::handle_client()` in its
+     own thread.
+   - The handler parses the HTTP request, authenticates the session, and
+     dispatches to the camera, recording, and plugin endpoints.
 
 5. USB camera acquisition thread
    - `UsbCamera::start()` starts `acquisition_loop()` in a worker thread.
-   - The loop waits until `processing_enabled_` is true, reads frames from OpenCV `VideoCapture`, and publishes each frame to callbacks and the latest-frame buffer.
-   - If the device becomes unreadable, it sets `running_ = false` and releases the capture device.
+   - The loop waits until `processing_enabled_` is true, reads frames from OpenCV
+     `VideoCapture`, and publishes each frame to callbacks and the latest-frame
+     buffer.
+   - If the device becomes unreadable, it sets `running_ = false` and releases
+     the capture device.
 
 6. RealSense acquisition thread
    - `RealSenseCamera::start()` starts `acquisition_loop()` in a worker thread.
-   - It polls frames with `pipeline_.try_wait_for_frames()` and optionally aligns depth frames to color.
-   - Valid color frames are cloned and then distributed to callback listeners and the latest-frame cache.
-   - The loop handles hot-unplug exceptions by logging a warning and continuing to monitor the device.
+   - It polls frames with `pipeline_.try_wait_for_frames()` and optionally aligns
+     depth frames to color.
+   - Valid color frames are cloned and then distributed to callback listeners
+     and the latest-frame cache.
+   - The loop handles hot-unplug exceptions by logging a warning and continuing
+     to monitor the device.
 
 7. Recording callback thread flow
    - `BaseSystem` registers a frame callback with the selected camera.
-   - When `start_recording()` is called, it creates `media/videos`, sets `recording_active_ = true`, and prepares the output writer.
-   - Every received frame is checked for duplication and then written to the video file via `VideoWriter`.
+   - When `start_recording()` is called, it enables recording and prepares the
+     output writer.
+   - Every received frame is checked for duplication and then written to the
+     video file via `VideoWriter`.
    - `stop_recording()` closes the writer and disables recording.
    - `restart_recording()` stops then starts a new session.
-   - `capture_frame()` writes a JPEG snapshot to `media/image` using an async worker thread.
+   - `capture_frame()` writes a JPEG snapshot using an asynchronous worker.
 
 8. Shutdown thread cleanup
    - On shutdown, the signal handler sets the toggles to false.
-   - The main thread stops the web server, disables processing, stops the camera, and joins the monitor thread.
+   - The main thread stops the web server, disables processing, stops the camera,
+     and joins the monitor thread.
    - This ensures clean teardown without leaving background loops alive.
 
-This design keeps the camera, HTTP server, and recording pipeline independent while using shared atomic flags to coordinate state changes safely across threads.
+This design keeps the camera, HTTP server, and recording pipeline independent
+while using shared atomic flags to coordinate state changes safely across threads.
 
 ### How Frames are managed for both Recording Pipeline & Web App Pipeline
 
 The frame flow starts from the active camera backend:
 
 - `UsbCamera::acquisition_loop()` reads raw frames with `capture_.read(frame)`.
-- `RealSenseCamera::acquisition_loop()` waits for frames via `pipeline_.try_wait_for_frames()`, and optionally aligns depth to color before producing the RGB image.
-- Both camera implementations build a `FrameContext` object and publish it through registered callbacks.
+- `RealSenseCamera::acquisition_loop()` waits for frames via
+  `pipeline_.try_wait_for_frames()`, and optionally aligns depth to color before
+  producing the RGB image.
+- Both camera implementations build a `FrameContext` object and publish it
+  through registered callbacks.
 
 The actual flow is:
 
 1. Camera backend produces a raw frame.
 2. The frame is wrapped in `FrameContext` with a sequence number.
-3. The camera stores the newest frame in `latest_frame_` and exposes it through `latest_frame()`.
+3. The camera stores the newest frame in `latest_frame_` and exposes it through
+   `latest_frame()`.
 4. Registered callbacks receive the same frame object.
 5. `BaseSystem` subscribes to the camera callback for the recording pipeline.
-6. `WebServer` subscribes to the same callback to maintain its latest stream frame.
+6. `WebServer` subscribes to the same callback to maintain its latest stream
+   frame.
 
 For the recording pipeline:
 
-- `BaseSystem::on_frame_received()` checks whether recording is active and whether the frame is valid.
+- `BaseSystem::on_frame_received()` checks whether recording is active and
+  whether the frame is valid.
 - It ignores duplicate sequences using `last_written_sequence_`.
-- If the writer is not opened yet, it calls `open_writer_if_needed()` and `try_open_writer()`.
-- The frame is then written directly to the video file with `writer_.write(*frame.color)`.
+- If the writer is not opened yet, it calls `open_writer_if_needed()` and
+  `try_open_writer()`.
+- The frame is passed to a bounded recording queue; a recording worker then
+  calls `writer_.write(*frame.color)` away from the camera acquisition thread.
 - No resizing, downsampling, or frame averaging is performed before recording.
-- The output uses the camera frame size and a fixed FPS value of `30.0`, with an optional `VISION_AI_BOX_GSTREAMER_PIPELINE` override.
+- The writer uses the camera frame size and a fixed FPS value of `30.0`.
 
 For the web app pipeline:
 
-- `WebServer` registers a callback that stores the latest color frame in `latest_stream_frame_` under a mutex.
-- When `/api/camera/stream` is requested, it keeps sending JPEG frames using `cv::imencode(".jpg", ...)` with `cv::IMWRITE_JPEG_QUALITY = 80`.
-- This means the web stream is compressed to JPEG before being sent to the browser.
-- There is no explicit downsampling step before the web stream; the app sends the current camera frame as-is and encodes it as JPEG at the moment of streaming.
+- `WebServer` registers a callback that stores the latest color frame in
+  `latest_stream_frame_` in a sequence-aware, condition-variable mailbox.
+- Each HTTP client waits for a newer frame sequence and drops stale frames
+  instead of building a backlog or transmitting the same frame repeatedly.
+- The stream resizes only its web copy while preserving the source aspect ratio,
+  then encodes it as JPEG and sends it as multipart MJPEG.
+- Each client adapts through quality, resolution, and FPS profiles based on
+  measured socket-send time and encoded byte size. Poor throughput lowers JPEG
+  quality first, then resolution/FPS; recovery is slower to prevent oscillation.
+- Per-client frame, skip, byte, encode, and send metrics are logged when the
+  stream connection ends.
 
 So the short answer is:
 
-- Recording path: raw frame is passed through, no downsampling, no extra compression before writing to video.
-- Web stream path: raw frame is kept in memory and compressed to JPEG right before transmission.
-- Both pipelines share the same camera frame source, but only the web stream applies JPEG encoding for browser delivery.
+- Recording path: frames remain raw in memory, then `VideoWriter` applies the
+  selected video codec when writing the recording. The default is `mp4v`; it can
+  be overridden with `VISION_AI_BOX_FOURCC` or a GStreamer pipeline.
+- Web stream path: frames remain raw in memory and are resized/ compressed to
+  JPEG immediately before transmission as a multipart MJPEG stream.
+- Captured stills use `cv::imwrite` with a `.jpeg` extension and are JPEG-
+  compressed when saved.
+- Both pipelines share the same camera frame source. RealSense depth frames
+  remain `CV_16UC1` matrices and are not currently sent to either output.
+
+The web stream adaptation does not change `CameraSettings`: camera capture
+resolution and FPS remain shared by recording and AI processing. Plugin and
+recording callbacks now enqueue into bounded drop-oldest worker queues, so
+camera acquisition does not perform plugin inference or video writing inline.
+JPEG bytes are cached by frame sequence and stream profile, allowing clients
+with matching profiles to reuse an encoded frame.

@@ -263,7 +263,6 @@
     <div class="nav-tabs">
       <div class="nav-tab active">Main</div>
       <div class="nav-tab">Query data</div>
-      <div class="nav-tab">Options</div>
     </div>
   </header>
 
@@ -377,54 +376,6 @@
         </div>
 
         <div id="query-session-list" class="query-session-list"></div>
-      </div>
-    </div>
-
-    <div id="view-options" hidden>
-      <div class="panel-box" style="max-width: 720px; margin: 24px auto;">
-        <div class="panel-title">Camera Settings</div>
-        <form id="camera-settings-form" style="display: grid; gap: 12px; margin-top: 12px;">
-          <div class="control-group" style="grid-template-columns: 140px 1fr;">
-            <label for="color_resolution">Color Resolution</label>
-            <select id="color_resolution" name="color_resolution"></select>
-          </div>
-          <div class="control-group" style="grid-template-columns: 140px 1fr;">
-            <label for="color_fps">Color FPS</label>
-            <select id="color_fps" name="color_fps"></select>
-          </div>
-          <div class="control-group" style="grid-template-columns: 140px 1fr;">
-            <label for="auto_exposure">Auto Exposure</label>
-            <select id="auto_exposure" name="auto_exposure">
-              <option value="true">Enabled</option>
-              <option value="false">Disabled</option>
-            </select>
-          </div>
-          <div class="control-group" style="grid-template-columns: 140px 1fr;">
-            <label for="auto_white_balance">Auto White Balance</label>
-            <select id="auto_white_balance" name="auto_white_balance">
-              <option value="true">Enabled</option>
-              <option value="false">Disabled</option>
-            </select>
-          </div>
-          <div id="depth-settings" hidden>
-            <div class="control-group" style="grid-template-columns: 140px 1fr;">
-              <label for="depth_resolution">Depth Resolution</label>
-              <select id="depth_resolution" name="depth_resolution"></select>
-            </div>
-            <div class="control-group" style="grid-template-columns: 140px 1fr;">
-              <label for="depth_fps">Depth FPS</label>
-              <select id="depth_fps" name="depth_fps"></select>
-            </div>
-          </div>
-          <div class="control-group" id="usb-device-field" style="grid-template-columns: 140px 1fr; display: none;">
-            <label for="usb_device_index">Device Index</label>
-            <input id="usb_device_index" name="usb_device_index" type="number" min="-1" max="15" step="1">
-          </div>
-          <div style="display: flex; justify-content: flex-end; gap: 8px;">
-            <button type="button" class="btn btn-secondary" id="cancel-settings-btn">Cancel</button>
-            <button type="submit" class="btn">Apply Settings</button>
-          </div>
-        </form>
       </div>
     </div>
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "IPlugin.hpp"
+#include "FrameQueue.hpp"
 #include "Logger.hpp"
 
 #include <filesystem>
@@ -8,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <thread>
 #include <vector>
 
 struct PluginInstance {
@@ -23,7 +25,7 @@ struct PluginInstance {
 class PluginManager {
 public:
     explicit PluginManager(Logger& logger);
-    ~PluginManager() = default;
+    ~PluginManager();
 
     bool load_plugin(const std::filesystem::path& plugin_path);
     bool load_plugin_by_name(const std::string& plugin_name);
@@ -39,9 +41,14 @@ public:
     bool select_plugin(const std::string& name);
 
 private:
+    void processing_loop();
+    void process_frame_now(const FrameContext& frame);
+
     Logger& logger_;
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::shared_ptr<PluginInstance>> plugins_;
     std::unordered_map<std::string, std::filesystem::path> plugin_paths_;
     std::filesystem::path plugin_directory_;
+    FrameQueue frame_queue_{2};
+    std::thread processing_thread_;
 };
