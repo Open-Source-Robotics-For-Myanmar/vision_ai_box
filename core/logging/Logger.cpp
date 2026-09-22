@@ -173,6 +173,12 @@ void Logger::log(LogLevel level, const std::string& category, const std::string&
 	std::cout << line << '\n';
 	std::cout.flush();
 
+	recent_lines_.push_back(line);
+	if (recent_lines_.size() > kMaxReturnedLines) {
+		recent_lines_.pop_front();
+	}
+	++next_line_index_;
+
 	if (!log_file_.is_open()) {
 		return;
 	}
@@ -196,24 +202,21 @@ void Logger::log(LogLevel level, const std::string& category, const std::string&
 std::vector<std::string> Logger::read_all_logs() const
 {
 	std::lock_guard lock(mutex_);
-	if (log_file_.is_open()) {
-		log_file_.flush();
+	return {recent_lines_.begin(), recent_lines_.end()};
+}
+
+std::vector<std::string> Logger::read_logs_after(std::uint64_t& cursor) const
+{
+	std::lock_guard lock(mutex_);
+	const std::uint64_t first = next_line_index_ - recent_lines_.size();
+	if (cursor < first) {
+		cursor = first;
 	}
 
-	std::ifstream input(session_log_path_);
 	std::vector<std::string> lines;
-	if (!input.is_open()) {
-		return lines;
+	for (std::uint64_t index = cursor; index < next_line_index_; ++index) {
+		lines.push_back(recent_lines_[static_cast<std::size_t>(index - first)]);
 	}
-
-	std::string line;
-	while (std::getline(input, line)) {
-		lines.push_back(std::move(line));
-	}
-
-	if (lines.size() > kMaxReturnedLines) {
-		lines.erase(lines.begin(), lines.end() - static_cast<std::ptrdiff_t>(kMaxReturnedLines));
-	}
-
+	cursor = next_line_index_;
 	return lines;
 }

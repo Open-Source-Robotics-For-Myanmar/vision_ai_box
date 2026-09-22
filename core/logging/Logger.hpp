@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -24,6 +25,7 @@ public:
 
 	void log(LogLevel level, const std::string& category, const std::string& message);
 	std::vector<std::string> read_all_logs() const;
+	std::vector<std::string> read_logs_after(std::uint64_t& cursor) const;
 
 private:
 	// The three helpers below need mutex_ held, or a caller that has not yet
@@ -42,4 +44,6 @@ private:
 	std::uintmax_t max_bytes_;
 	std::size_t max_files_;
 	std::chrono::steady_clock::time_point last_flush_{};
+	std::deque<std::string> recent_lines_;
+	std::uint64_t next_line_index_{0};
 };

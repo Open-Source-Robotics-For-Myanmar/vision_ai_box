@@ -111,23 +111,28 @@ async function request(path, options = {}) {
   return payload;
 }
 
-// Fetch Session Logs and Auto-Scroll Terminal
-async function fetchSessionLogs() {
-  try {
-    const logs = await request('/api/logs');
-    if (Array.isArray(logs) && logs.length > 0) {
-      const shouldScrollToBottom = logTerminal.scrollHeight - logTerminal.clientHeight <= logTerminal.scrollTop + 24;
-      logTerminal.textContent = logs.join('\n');
-      if (shouldScrollToBottom || logTerminal.scrollTop === 0) {
-        logTerminal.scrollTop = logTerminal.scrollHeight;
-      }
-    } else {
-      logTerminal.textContent = 'No logs recorded for this session.';
-      logTerminal.scrollTop = 0;
-    }
-  } catch (err) {
-    logTerminal.textContent = 'Failed to fetch session logs...';
+let sessionLogLines = [];
+
+function applySessionLogs(payload) {
+  const incoming = Array.isArray(payload) ? payload : (payload && payload.lines) || [];
+  const reset = !payload || payload.reset === true || Array.isArray(payload);
+  if (reset) {
+    sessionLogLines = incoming.slice();
+  } else {
+    sessionLogLines.push(...incoming);
+  }
+
+  if (!logTerminal) return;
+  if (sessionLogLines.length === 0) {
+    logTerminal.textContent = 'No logs recorded for this session.';
     logTerminal.scrollTop = 0;
+    return;
+  }
+
+  const shouldScrollToBottom = logTerminal.scrollHeight - logTerminal.clientHeight <= logTerminal.scrollTop + 24;
+  logTerminal.textContent = sessionLogLines.join('\n');
+  if (shouldScrollToBottom || logTerminal.scrollTop === 0) {
+    logTerminal.scrollTop = logTerminal.scrollHeight;
   }
 }
 
@@ -137,46 +142,118 @@ async function fetchSessionLogs() {
 // JPEG server-side. That keeps inference rate and stream rate independent,
 // costs the device no extra encoding, and leaves the boxes crisp even when the
 // adaptive ladder has degraded the video quality.
-let detectionSource = null;
+let dashboardSource = null;
 let detections = [];
 let detectionsReceivedAt = 0;
 let overlayFrameId = null;
+let mediaSource = null;
+let sourceBuffer = null;
+let streamReader = null;
+let pendingChunks = [];
+let streamObjectUrl = '';
 
 const DETECTION_STALE_MS = 2000;
+const H264_MIME = 'video/mp4; codecs="avc1.42C028"';
 
-function startDetectionStream() {
-  if (detectionSource) return;
+function applyDetections(payload) {
+  detections = payload && Array.isArray(payload.detections) ? payload.detections : [];
+  detectionsReceivedAt = performance.now();
+}
 
-  detectionSource = new EventSource('/api/plugins/events');
-  detectionSource.onmessage = (event) => {
-    try {
-      const payload = JSON.parse(event.data);
-      detections = Array.isArray(payload.detections) ? payload.detections : [];
-      detectionsReceivedAt = performance.now();
-    } catch (error) {
-      detections = [];
-    }
-  };
-  // EventSource reconnects on its own; just stop drawing what we last had.
-  detectionSource.onerror = () => { detections = []; };
-
+function startOverlayLoop() {
   if (overlayFrameId === null) {
     overlayFrameId = requestAnimationFrame(renderOverlay);
   }
 }
 
-function stopDetectionStream() {
-  if (detectionSource) {
-    detectionSource.close();
-    detectionSource = null;
-  }
+function stopOverlayLoop() {
   detections = [];
-
   if (overlayFrameId !== null) {
     cancelAnimationFrame(overlayFrameId);
     overlayFrameId = null;
   }
   if (detectionOverlay) detectionOverlay.hidden = true;
+}
+
+function appendPendingChunks() {
+  if (!sourceBuffer || sourceBuffer.updating || pendingChunks.length === 0) return;
+  const chunk = pendingChunks.shift();
+  try {
+    sourceBuffer.appendBuffer(chunk);
+  } catch (error) {
+    reconnectStream();
+  }
+}
+
+function stopH264Stream() {
+  if (streamReader) {
+    streamReader.cancel().catch(() => {});
+    streamReader = null;
+  }
+  pendingChunks = [];
+  sourceBuffer = null;
+  if (mediaSource) {
+    if (mediaSource.readyState === 'open') {
+      try { mediaSource.endOfStream(); } catch (error) {}
+    }
+    mediaSource = null;
+  }
+  if (streamObjectUrl) {
+    URL.revokeObjectURL(streamObjectUrl);
+    streamObjectUrl = '';
+  }
+  if (stream) {
+    stream.removeAttribute('src');
+    stream.load();
+  }
+}
+
+async function pumpH264Stream(response) {
+  if (!response.ok || !response.body) {
+    reconnectStream();
+    return;
+  }
+
+  streamReader = response.body.getReader();
+  while (streamActive && streamReader) {
+    const { value, done } = await streamReader.read();
+    if (done) break;
+    if (value && value.byteLength > 0) {
+      pendingChunks.push(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+      appendPendingChunks();
+    }
+  }
+
+  if (streamActive) {
+    reconnectStream();
+  }
+}
+
+function startH264Stream() {
+  if (!stream || !window.MediaSource || !MediaSource.isTypeSupported(H264_MIME)) {
+    console.error('This browser cannot play the live H.264 stream');
+    return;
+  }
+
+  stopH264Stream();
+  mediaSource = new MediaSource();
+  streamObjectUrl = URL.createObjectURL(mediaSource);
+  stream.src = streamObjectUrl;
+  stream.hidden = false;
+
+  mediaSource.addEventListener('sourceopen', async () => {
+    try {
+      sourceBuffer = mediaSource.addSourceBuffer(H264_MIME);
+      sourceBuffer.mode = 'sequence';
+      sourceBuffer.addEventListener('updateend', appendPendingChunks);
+      const response = await fetch('/api/camera/stream?generation=' + Date.now(), {
+        credentials: 'same-origin'
+      });
+      await pumpH264Stream(response);
+    } catch (error) {
+      if (streamActive) reconnectStream();
+    }
+  }, { once: true });
 }
 
 // The <img> is object-fit: contain, so the picture is letterboxed inside the
@@ -186,8 +263,8 @@ function stopDetectionStream() {
 function videoContentRect() {
   const elementWidth = stream.clientWidth;
   const elementHeight = stream.clientHeight;
-  const sourceWidth = stream.naturalWidth;
-  const sourceHeight = stream.naturalHeight;
+  const sourceWidth = stream.videoWidth || stream.naturalWidth;
+  const sourceHeight = stream.videoHeight || stream.naturalHeight;
   if (!elementWidth || !elementHeight || !sourceWidth || !sourceHeight) return null;
 
   const scale = Math.min(elementWidth / sourceWidth, elementHeight / sourceHeight);
@@ -254,9 +331,36 @@ function renderOverlay() {
   }
 }
 
-// Refresh Camera Feed & Toggle Status
-async function refreshStatus() {
-  const status = await request('/api/camera/status');
+function applyRecording(recording) {
+  if (!recordStatusIndicator || !recordStatusText || !recordToggleBtn) return;
+  const active = Boolean(recording && recording.recording);
+  const elapsedSeconds = Number((recording && recording.elapsed_seconds) || 0);
+
+  const dot = recordStatusIndicator.querySelector('span');
+  if (dot) {
+    dot.style.background = active ? '#ff3b30' : '#666';
+  }
+  recordStatusText.textContent = active ? 'Recording' : 'Idle';
+  recordToggleBtn.textContent = active ? 'Stop Record' : 'Start Record';
+  recordToggleBtn.style.background = active ? '#d32f2f' : '#1e88e5';
+
+  if (active) {
+    const timerElapsedSeconds = Math.max(0, elapsedSeconds);
+    const timerDriftSeconds = recordingStartedAt ? Math.abs(Math.floor((Date.now() - recordingStartedAt) / 1000) - timerElapsedSeconds) : Number.MAX_SAFE_INTEGER;
+    if (!recordingTimerId || !recordingStartedAt || timerDriftSeconds > 1) {
+      startRecordingTimer(timerElapsedSeconds);
+    }
+  } else {
+    stopRecordingTimer();
+  }
+
+  const canRecord = canRecordWithCamera();
+  recordToggleBtn.disabled = !canRecord;
+  if (restartRecordBtn) restartRecordBtn.disabled = !canRecord;
+  if (captureBtn) captureBtn.disabled = !canRecord;
+}
+
+function applyStatus(status) {
   const enabled = Boolean(status.enabled);
   const connected = Boolean(status.connected);
   const running = Boolean(status.running);
@@ -319,44 +423,28 @@ async function refreshStatus() {
 
   stream.hidden = !(enabled && connected && running);
   if (enabled && connected && running && !streamActive) {
-    stream.src = '/api/camera/stream?generation=' + Date.now();
     streamActive = true;
-    startDetectionStream();
+    startH264Stream();
+    startOverlayLoop();
   } else if (!enabled || !connected || !running) {
-    stream.removeAttribute('src');
     streamActive = false;
-    stopDetectionStream();
+    stopH264Stream();
+    stopOverlayLoop();
   }
 
+  const canRecord = canRecordWithCamera();
+  if (recordToggleBtn) recordToggleBtn.disabled = !canRecord && !(recordStatusText && recordStatusText.textContent === 'Recording');
+  if (restartRecordBtn) restartRecordBtn.disabled = !canRecord;
+  if (captureBtn) captureBtn.disabled = !canRecord;
+}
+
+async function refreshStatus() {
+  const status = await request('/api/camera/status');
+  applyStatus(status);
   try {
-    const recording = await request('/api/record/status');
-    const active = Boolean(recording.recording);
-    const elapsedSeconds = Number(recording.elapsed_seconds || 0);
-
-    const dot = recordStatusIndicator.querySelector('span');
-    dot.style.background = active ? '#ff3b30' : '#666';
-    recordStatusText.textContent = active ? 'Recording' : 'Idle';
-    recordToggleBtn.textContent = active ? 'Stop Record' : 'Start Record';
-    recordToggleBtn.style.background = active ? '#d32f2f' : '#1e88e5';
-
-    const recordDuration = document.querySelector('#record-duration');
-    if (active) {
-      const timerElapsedSeconds = Math.max(0, Number(recording.elapsed_seconds || 0));
-      const timerDriftSeconds = recordingStartedAt ? Math.abs(Math.floor((Date.now() - recordingStartedAt) / 1000) - timerElapsedSeconds) : Number.MAX_SAFE_INTEGER;
-
-      if (!recordingTimerId || !recordingStartedAt || timerDriftSeconds > 1) {
-        startRecordingTimer(timerElapsedSeconds);
-      }
-    } else {
-      stopRecordingTimer();
-    }
-
-    const canRecord = canRecordWithCamera();
-    recordToggleBtn.disabled = !canRecord;
-    restartRecordBtn.disabled = !canRecord;
-    captureBtn.disabled = !canRecord;
+    applyRecording(await request('/api/record/status'));
   } catch (error) {
-    recordStatusText.textContent = 'Status unavailable';
+    if (recordStatusText) recordStatusText.textContent = 'Status unavailable';
     stopRecordingTimer();
   }
 }
@@ -376,8 +464,33 @@ function reconnectStream() {
   streamReconnectTimerId = setTimeout(() => {
     streamReconnectTimerId = null;
     if (!streamActive) return;
-    stream.src = '/api/camera/stream?generation=' + Date.now();
+    startH264Stream();
   }, 500);
+}
+
+function startDashboardEvents() {
+  if (dashboardSource) return;
+
+  dashboardSource = new EventSource('/api/events');
+  dashboardSource.addEventListener('status', (event) => {
+    try { applyStatus(JSON.parse(event.data)); } catch (error) {}
+  });
+  dashboardSource.addEventListener('recording', (event) => {
+    try { applyRecording(JSON.parse(event.data)); } catch (error) {}
+  });
+  dashboardSource.addEventListener('logs', (event) => {
+    try { applySessionLogs(JSON.parse(event.data)); } catch (error) {}
+  });
+  dashboardSource.addEventListener('plugins', (event) => {
+    try { renderPluginList(JSON.parse(event.data)); } catch (error) {}
+  });
+  dashboardSource.addEventListener('detections', (event) => {
+    try { applyDetections(JSON.parse(event.data)); } catch (error) { detections = []; }
+  });
+  dashboardSource.onerror = () => {
+    detections = [];
+  };
+  startOverlayLoop();
 }
 
 function showView(viewName) {
@@ -945,12 +1058,9 @@ if (window.location.pathname === '/dashboard') {
   loginContainer.hidden = true;
   dashboard.hidden = false;
   showView('video');
+  startDashboardEvents();
   refreshStatus().catch(error => { cameraStatus.textContent = error.message; });
-
-  fetchSessionLogs();
   refreshPluginList().catch(() => {});
-  setInterval(fetchSessionLogs, 1000);
-  setInterval(refreshStatus, 2000);
 }
 
 // Login Event Listener

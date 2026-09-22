@@ -58,6 +58,14 @@ find_package(OpenCV REQUIRED COMPONENTS
 
 find_package(nlohmann_json REQUIRED)
 find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+    libavcodec
+    libavformat
+    libavutil
+    libswscale
+)
 
 
 
@@ -101,6 +109,7 @@ set(VISION_AI_BOX_SOURCES
     logging/Logger.cpp
     base_system/Recording.cpp
     web_server/WebServer.cpp
+    web_server/H264Stream.cpp
     plugin_manager/PluginManager.cpp
 )
 list(APPEND VISION_AI_BOX_SOURCES ${CAMERA_SOURCES})
@@ -119,6 +128,7 @@ target_include_directories(vision_ai_box
     PRIVATE
     ${INCLUDE_DIR}
     ${PROJECT_ROOT}
+    ${PROJECT_ROOT}/thirdparty
     ${PROJECT_ROOT}/base_system
     ${PROJECT_ROOT}/camera
     ${PROJECT_ROOT}/logging
@@ -139,6 +149,7 @@ target_link_libraries(vision_ai_box
     PRIVATE
     ${OpenCV_LIBS}
     nlohmann_json::nlohmann_json
+    PkgConfig::FFMPEG
     Threads::Threads
     ${CMAKE_DL_LIBS}    # <-- Dynamic Loader Library (libdl) Link လုပ်ထားသည်
 )
