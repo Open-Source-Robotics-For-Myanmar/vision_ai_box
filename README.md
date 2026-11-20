@@ -65,141 +65,162 @@ Plugin page lists available libraries with no active selection. Selecting a
 plugin calls `POST /api/plugins`, which loads that library at runtime and makes
 it the active plugin. Only the selected plugin receives frames.
 
-## Implementation
+## Frame workflow
 
-### Worker Threads
+The outer loop is the camera acquisition loop, accepting decoded camera frames
+(`cv::Mat` color and optional aligned 16-bit depth). Here "raw" means unmodified
+camera pixels in memory, not Bayer sensor RAW. The main service loop only manages
+lifetime. Nested stages are logical stages, not blocking infinite loops inside
+capture: capture and AI each have their own worker.
 
-The project uses several background threads to decouple camera capture, web I/O,
-and recording work from the main application loop.
+```mermaid
+flowchart TD
+    A[Camera acquisition loop: raw frame + sequence] --> B[Bounded AI queue]
+    B --> C[First inner stage: optional downscale / filter]
+    C --> D[Second inner stage: selected dynamic .so model]
+    D --> E[Normalized detections → SSE → overlay]
+    A --> F[Raw recording queue → video codec → file]
+    A --> G[Latest raw preview → resize → H.264 / MPEG-TS]
+    A --> H[Snapshot → JPEG]
+```
 
-1. Main service loop
-   - `main()` creates the camera object and starts the web server.
-   - It then initializes the camera once, starts the monitor thread, and enters
-     a `while (toggles.running)` loop.
-   - This loop only waits and listens for shutdown signals; it does not perform
-     heavy processing.
+The two inner stages run sequentially in the AI worker. This keeps preprocessing
+and model execution ordered with one pending-frame queue. A separate preprocessing
+worker and second queue can be added if profiling shows a throughput benefit.
+Recording and preview subscribe directly to raw capture; changing AI quality does
+not change their resolution or the physical camera settings.
 
-2. Camera reconnect monitor thread
-   - `camera_reconnect_loop()` runs as a background thread.
-   - It checks `ServiceToggles::camera_enabled`, `camera.check_device_state()`,
-     and `camera.is_running()` in a loop.
-   - If the camera is disabled, it stops the device and clears processing flags.
-   - If the camera is unplugged while running, it stops capture and sets
-     `camera_error = true`.
-   - If the device becomes available again, it calls `camera.start()` and
-     re-enables processing.
+### First inner stage: preprocessing and QoS
 
-3. Web server accept thread
-   - `WebServer::start()` creates a listening socket and starts `accept_loop()`
-     in a dedicated thread.
-   - `accept_loop()` repeatedly calls `accept()`, then spawns a new thread for
-     each connected client via `handle_client()`.
+`FramePreprocessor.hpp` implements optional preprocessing. It is **off by default**.
+Even in bypass mode, the model receives owned copies so a plugin cannot overwrite
+the raw buffers shared with recording/preview. With preprocessing enabled:
 
-4. Client request worker threads
-   - Each client connection is handled by `WebServer::handle_client()` in its
-     own thread.
-   - The handler parses the HTTP request, authenticates the session, and
-     dispatches to the camera, recording, and plugin endpoints.
+| Setting | Behavior |
+| --- | --- |
+| `mode: downscale` | Aspect-preserving reduction, never upscale |
+| `mode: filter` | Same reduction, followed by a 3×3 Gaussian color filter |
+| `quality: low` | Longest color edge at most 640 pixels |
+| `quality: medium` | Longest color edge at most 1280 pixels |
+| `quality: high` | Native dimensions |
 
-5. USB camera acquisition thread
-   - `UsbCamera::start()` starts `acquisition_loop()` in a worker thread.
-   - The loop waits until `processing_enabled_` is true, reads frames from OpenCV
-     `VideoCapture`, and publishes each frame to callbacks and the latest-frame
-     buffer.
-   - If the device becomes unreadable, it sets `running_ = false` and releases
-     the capture device.
+Aligned depth follows the same dimensions using nearest-neighbor sampling,
+preserving integer depth units. Filtering does not blur depth. Normalized boxes
+remain usable on the original preview because the resize preserves the full view.
+Model-specific letterboxing, channel conversion, tensor normalization and output
+coordinate conversion still belong inside each model plugin.
 
-6. RealSense acquisition thread
-   - `RealSenseCamera::start()` starts `acquisition_loop()` in a worker thread.
-   - It polls frames with `pipeline_.try_wait_for_frames()` and optionally aligns
-     depth frames to color.
-   - Valid color frames are cloned and then distributed to callback listeners
-     and the latest-frame cache.
-   - The loop handles hot-unplug exceptions by logging a warning and continuing
-     to monitor the device.
+Quality and delivery are separate settings:
 
-7. Recording callback thread flow
-   - `BaseSystem` registers a frame callback with the selected camera.
-   - When `start_recording()` is called, it enables recording and prepares the
-     output writer.
-   - Every received frame is checked for duplication and then written to the
-     video file via `VideoWriter`.
-   - `stop_recording()` closes the writer and disables recording.
-   - `restart_recording()` stops then starts a new session.
-   - `capture_frame()` writes a JPEG snapshot using an asynchronous worker.
+| Delivery policy | Full queue behavior | Trade-off |
+| --- | --- | --- |
+| `best_effort` (default) | Evict oldest pending frame | Fresh detections, bounded memory |
+| `reliable` | Block producer until space becomes available | FIFO delivery, capture/preview/recording may slow down |
 
-8. Shutdown thread cleanup
-   - On shutdown, the signal handler sets the toggles to false.
-   - The main thread stops the web server, disables processing, stops the camera,
-     and joins the monitor thread.
-   - This ensures clean teardown without leaving background loops alive.
+`queue_capacity` accepts 1–32 frames. These are application queue policies, not
+DDS/ROS or network delivery guarantees. Reliable means no overflow eviction in
+this queue during steady operation; it does not guarantee sensor, driver, network
+or disk delivery. Changing configuration, unloading a model and shutting down
+explicitly discard queued frames. One frame already in progress can finish using
+the previous settings. Queue capacity alone does not bound inference time.
 
-This design keeps the camera, HTTP server, and recording pipeline independent
-while using shared atomic flags to coordinate state changes safely across threads.
+For live camera use, start with `best_effort`, capacity 1, downscale/medium and
+measure detection accuracy before enabling blur or reducing resolution. For
+lossless acquisition with a slower detector, use a separate durable recording/spool
+and offline inference; finite RAM cannot preserve an unlimited producer backlog.
 
-### How Frames are managed for both Recording Pipeline & Web App Pipeline
+Compression is deliberately on the **output branches**. The current preview uses
+H.264 in MPEG-TS, recording uses `VideoWriter`, and snapshots use JPEG. The local
+model consumes decoded pixels. `compressed` is not an AI preprocessing mode:
+compressing then immediately decoding adds work and can lose image detail. For a
+future remote detector, add an encoder → transport → decoder branch with its own
+QoS and measurements. Merely lowering JPEG quality is not a reliability policy.
 
-The frame flow starts from the active camera backend:
+### Runtime configuration
 
-- `UsbCamera::acquisition_loop()` reads raw frames with `capture_.read(frame)`.
-- `RealSenseCamera::acquisition_loop()` waits for frames via
-  `pipeline_.try_wait_for_frames()`, and optionally aligns depth to color before
-  producing the RGB image.
-- Both camera implementations build a `FrameContext` object and publish it
-  through registered callbacks.
+The existing login/session authentication also protects the new endpoints:
 
-The actual flow is:
+- `GET /api/pipeline`: settings, queue drops/rejections and processing errors.
+- `POST /api/pipeline`: validated partial settings update, without restarting the camera.
 
-1. Camera backend produces a raw frame.
-2. The frame is wrapped in `FrameContext` with a sequence number.
-3. The camera stores the newest frame in `latest_frame_` and exposes it through
-   `latest_frame()`.
-4. Registered callbacks receive the same frame object.
-5. `BaseSystem` subscribes to the camera callback for the recording pipeline.
-6. `WebServer` subscribes to the same callback to maintain its latest stream
-   frame.
+Example request body for `POST /api/pipeline`:
 
-For the recording pipeline:
+```json
+{
+  "enabled": true,
+  "mode": "downscale",
+  "quality": "medium",
+  "delivery": "best_effort",
+  "queue_capacity": 1
+}
+```
 
-- `BaseSystem::on_frame_received()` checks whether recording is active and
-  whether the frame is valid.
-- It ignores duplicate sequences using `last_written_sequence_`.
-- If the writer is not opened yet, it calls `open_writer_if_needed()` and
-  `try_open_writer()`.
-- The frame is passed to a bounded recording queue; a recording worker then
-  calls `writer_.write(*frame.color)` away from the camera acquisition thread.
-- No resizing, downsampling, or frame averaging is performed before recording.
-- The writer uses the camera frame size and a fixed FPS value of `30.0`.
+Send `{"enabled": false}` to bypass transformations while keeping model inference
+active. Set `delivery` to `reliable` independently of the preprocessing toggle.
+Unknown keys, invalid modes/policies and invalid capacities return HTTP 400.
+Configuration is in memory and resets on restart. These controls are API-only;
+the dashboard does not yet expose a pipeline settings form. The drop counter
+counts overflow evictions and rejected pushes, not frames cleared at boundaries.
 
-For the web app pipeline:
+### Second inner stage: dynamically linked models
 
-- `WebServer` registers a callback that stores the latest color frame in
-  `latest_stream_frame_` in a sequence-aware, condition-variable mailbox.
-- Each HTTP client waits for a newer frame sequence and drops stale frames
-  instead of building a backlog or transmitting the same frame repeatedly.
-- The stream resizes only its web copy while preserving the source aspect ratio,
-  then encodes it as JPEG and sends it as multipart MJPEG.
-- Each client adapts through quality, resolution, and FPS profiles based on
-  measured socket-send time and encoded byte size. Poor throughput lowers JPEG
-  quality first, then resolution/FPS; recovery is slower to prevent oscillation.
-- Per-client frame, skip, byte, encode, and send metrics are logged when the
-  stream connection ends.
+`PluginManager` discovers `.so` files and uses the existing `create_plugin` /
+`destroy_plugin` factories. `POST /api/plugins` selects one model at runtime;
+`POST /api/plugins/unload` removes a model. Only the selected model receives
+prepared frames. Shared ownership keeps its library alive during in-flight work.
+Results from a removed instance are rejected before publication. Plugin settings,
+enable/disable and inference calls are serialized per instance. Calls reading a
+plugin's settings can therefore wait for its current inference to finish.
 
-So the short answer is:
+Initialization failures release the plugin/library; preprocessing and inference
+exceptions are counted/logged instead of escaping the worker thread. Native
+crashes and permanently hung plugins still need process isolation or a watchdog.
+All plugins must be built with a compatible C++/OpenCV ABI.
 
-- Recording path: frames remain raw in memory, then `VideoWriter` applies the
-  selected video codec when writing the recording. The default is `mp4v`; it can
-  be overridden with `VISION_AI_BOX_FOURCC` or a GStreamer pipeline.
-- Web stream path: frames remain raw in memory and are resized/ compressed to
-  JPEG immediately before transmission as a multipart MJPEG stream.
-- Captured stills use `cv::imwrite` with a `.jpeg` extension and are JPEG-
-  compressed when saved.
-- Both pipelines share the same camera frame source. RealSense depth frames
-  remain `CV_16UC1` matrices and are not currently sent to either output.
+**The existing models are prototypes:** `example` emits a synthetic moving box;
+`face_recognition` returns no detections. Object detection and the depth plugin
+directories are not enabled in `plugins/CMakeLists.txt`. This pipeline does not
+supply trained model weights or a real inference backend.
 
-The web stream adaptation does not change `CameraSettings`: camera capture
-resolution and FPS remain shared by recording and AI processing. Plugin and
-recording callbacks now enqueue into bounded drop-oldest worker queues, so
-camera acquisition does not perform plugin inference or video writing inline.
-JPEG bytes are cached by frame sequence and stream profile, allowing clients
-with matching profiles to reuse an encoded frame.
+### Capture lifetime and outputs
+
+Camera sequence numbers continue across restarts, so the preview's "newer frame"
+comparison and recording duplicate detection do not stall waiting for a reset
+sequence to catch up. A finished USB worker is joined before replacement. During
+application shutdown, the AI queue closes first to release blocked reliable-mode
+producers, then capture and server shutdown proceed.
+
+Recording has its own eight-frame drop-oldest queue. Its writer currently uses
+30 FPS regardless of camera FPS; dropped frames or a different capture rate can
+therefore distort playback duration. Preview has a per-client latest-frame
+mailbox and adaptive H.264 output. RealSense depth is currently supplied to the AI
+callback but not streamed or recorded by those output paths.
+
+### Follow-up priorities
+
+1. Implement a real detector plugin with model input/output metadata and measured
+   latency; validate normalized boxes after its own resize/letterbox transform.
+2. Centralize camera start/stop/settings/reconnect ownership. The monitor and HTTP
+   control paths still share camera settings/state and need a coordinated command
+   path before more runtime camera features are added.
+3. Use capture timestamps and actual FPS for recording; track end-to-end frame age,
+   stage latency and queue depth, then set explicit latency budgets.
+4. Add pipeline controls and persistence if operators need to manage these settings
+   from the dashboard; keep transport compression and AI quality separate.
+5. Validate USB reconnect, RealSense alignment, rapid model switching and overload
+   with physical hardware and actual models before deployment.
+
+## Validation
+
+With the build dependencies installed:
+
+```sh
+cmake -S . -B build-usb -DCMAKE_BUILD_TYPE=Debug -DCAMERA=USB -DBUILD_TESTING=ON
+cmake --build build-usb -j
+ctest --test-dir build-usb --output-on-failure
+```
+
+`pipeline_tests` covers best-effort eviction, reliable FIFO/backpressure, producer
+release on close/reconfiguration, invalid settings, bypass buffer isolation,
+aspect-preserving resizing and depth preservation. It does not require a camera.
+Hardware behavior and model-switch concurrency still need integration testing.

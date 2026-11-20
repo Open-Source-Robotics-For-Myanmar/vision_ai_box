@@ -17,6 +17,8 @@ public:
     // [0,1] against frame.color->size(); see PluginResult.hpp. Returning an
     // empty result is how a plugin says "nothing here", which the UI needs in
     // order to clear the previous overlay.
+    // The manager supplies owned color/depth buffers after optional pipeline
+    // preprocessing. Model-specific tensor conversion remains the plugin's job.
     virtual PluginResult process(const FrameContext& frame) = 0;
     virtual void update_settings(const nlohmann::json& config) = 0;
     virtual nlohmann::json get_settings() const = 0;

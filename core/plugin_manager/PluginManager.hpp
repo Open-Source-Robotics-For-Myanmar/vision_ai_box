@@ -2,6 +2,8 @@
 
 #include "IPlugin.hpp"
 #include "FrameQueue.hpp"
+#include "FramePreprocessor.hpp"
+#include <atomic>
 #include "Logger.hpp"
 #include "PluginState.hpp"
 
@@ -14,6 +16,7 @@
 #include <vector>
 
 struct PluginInstance {
+    mutable std::mutex call_mutex;
     void* handle{nullptr};
     IPlugin* plugin{nullptr};
     DestroyPluginFn destroy_fn{nullptr};
@@ -37,6 +40,9 @@ public:
     void scan_plugins();
 
     void process_frame(const FrameContext& frame);
+    void stop_accepting_frames();
+    nlohmann::json pipeline_info() const;
+    void update_pipeline_settings(const nlohmann::json& settings);
     bool latest_result(PluginResult& result) const;
     void update_plugin_settings(const std::string& name, const nlohmann::json& config);
     nlohmann::json get_all_plugin_info() const;
@@ -63,6 +69,10 @@ private:
     // Capacity one: the detector should always get the freshest frame
     // available rather than one that was already stale before inference began.
     FrameQueue frame_queue_{1};
+    mutable std::mutex pipeline_mutex_;
+    PipelineSettings pipeline_settings_;
+    std::atomic<std::uint64_t> queue_drops_{0};
+    std::atomic<std::uint64_t> processing_errors_{0};
     std::thread processing_thread_;
 
     mutable std::mutex result_mutex_;

@@ -120,6 +120,13 @@ list(APPEND VISION_AI_BOX_SOURCES ${CAMERA_SOURCES})
 # ============================================================
 
 add_executable(vision_ai_box ${VISION_AI_BOX_SOURCES})
+if(BUILD_TESTING)
+    add_executable(pipeline_tests tests/PipelineTests.cpp)
+    target_include_directories(pipeline_tests PRIVATE ${INCLUDE_DIR})
+    target_link_libraries(pipeline_tests PRIVATE ${OpenCV_LIBS} nlohmann_json::nlohmann_json Threads::Threads)
+    add_test(NAME pipeline_tests COMMAND pipeline_tests)
+    set_tests_properties(pipeline_tests PROPERTIES TIMEOUT 15)
+endif()
 target_compile_definitions(vision_ai_box PRIVATE ${CAMERA_DEFINITION})
 
 set_target_properties(vision_ai_box PROPERTIES ENABLE_EXPORTS ON) ## Export Permit For Plugins

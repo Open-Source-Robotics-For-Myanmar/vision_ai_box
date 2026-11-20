@@ -188,6 +188,7 @@ int main()
     toggles.running.store(false, std::memory_order_release);
     toggles.camera_error.store(false, std::memory_order_release);
 
+    plugin_manager.stop_accepting_frames();
     web_server.stop();
     camera.set_processing_enabled(false);
     camera.stop();

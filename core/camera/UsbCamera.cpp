@@ -93,6 +93,7 @@ bool UsbCamera::start()
 {
     std::lock_guard lock(lifecycle_mutex_);
     if (running_) return true;
+    if (worker_.joinable()) worker_.join();
     if (!initialize()) return false;
     running_ = true;
     worker_ = std::thread(&UsbCamera::acquisition_loop, this);
@@ -154,7 +155,7 @@ bool UsbCamera::check_device_state() const noexcept
 
 void UsbCamera::acquisition_loop()
 {
-    std::uint64_t sequence = 0;
+    std::uint64_t sequence = latest_sequence_.load(std::memory_order_acquire);
     while (running_) {
         if (!processing_enabled_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));

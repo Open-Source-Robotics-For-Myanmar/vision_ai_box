@@ -123,6 +123,7 @@ bool RealSenseCamera::start()
 {
     std::lock_guard lock(lifecycle_mutex_);
     if (running_) return true;
+    if (worker_.joinable()) worker_.join();
     if (!initialize()) return false;
     processing_enabled_ = true;
     running_ = true;
@@ -210,7 +211,7 @@ void RealSenseCamera::register_frame_callback(std::function<void(const FrameCont
 
 void RealSenseCamera::acquisition_loop()
 {
-    std::uint64_t sequence = 0;
+    std::uint64_t sequence = latest_sequence_.load(std::memory_order_acquire);
     while (running_) {
         if (!processing_enabled_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));

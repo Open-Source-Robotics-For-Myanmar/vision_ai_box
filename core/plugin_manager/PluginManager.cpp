@@ -1,6 +1,7 @@
 #include "PluginManager.hpp"
 
 #include <dlfcn.h>
+#include <stdexcept>
 
 PluginInstance::~PluginInstance()
 {
@@ -13,7 +14,11 @@ PluginInstance::~PluginInstance()
 }
 
 PluginManager::PluginManager(Logger& logger)
-    : logger_(logger), processing_thread_(&PluginManager::processing_loop, this) {}
+    : logger_(logger)
+{
+    // Start only after every mutex and result field has been constructed.
+    processing_thread_ = std::thread(&PluginManager::processing_loop, this);
+}
 
 PluginManager::~PluginManager()
 {
@@ -37,7 +42,7 @@ bool PluginManager::load_plugin_unlocked(const std::filesystem::path& plugin_pat
         return false;
     }
 
-    void* handle = dlopen(plugin_path.c_str(), RTLD_LAZY);
+    void* handle = dlopen(plugin_path.c_str(), RTLD_NOW);
     if (!handle) {
         logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Failed to load library: " + std::string(dlerror()));
         return false;
@@ -53,27 +58,25 @@ bool PluginManager::load_plugin_unlocked(const std::filesystem::path& plugin_pat
         return false;
     }
 
-    IPlugin* plugin_ptr = create_fn(&logger_);
-    if (!plugin_ptr) {
-        logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Plugin creation failed: " + plugin_path.string());
-        dlclose(handle);
-        return false;
-    }
-
-    plugin_ptr->init({});
-    plugin_ptr->set_enabled(false);
-
-    const std::string name = plugin_path.stem().string();
-    if (name.empty()) {
-        destroy_fn(plugin_ptr);
-        dlclose(handle);
-        logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Plugin file has no valid stem: " + plugin_path.string());
-        return false;
-    }
     auto loaded = std::make_shared<PluginInstance>();
     loaded->handle = handle;
-    loaded->plugin = plugin_ptr;
     loaded->destroy_fn = destroy_fn;
+    IPlugin* plugin_ptr = nullptr;
+    try {
+        loaded->plugin = create_fn(&logger_);
+        plugin_ptr = loaded->plugin;
+        if (!plugin_ptr) throw std::runtime_error("plugin factory returned null");
+        plugin_ptr->init({});
+        plugin_ptr->set_enabled(false);
+    } catch (const std::exception& error) {
+        logger_.log(LogLevel::ERROR, "PLUGIN_MGR", std::string("Plugin initialization failed: ") + error.what());
+        return false;
+    } catch (...) {
+        logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Plugin initialization failed with unknown exception");
+        return false;
+    }
+    const std::string name = plugin_path.stem().string();
+    if (name.empty()) return false;
     loaded->state = PluginState::Loading;
 
     {
@@ -139,6 +142,7 @@ bool PluginManager::unload_plugin_unlocked(const std::string& plugin_name)
         if (removed) {
             removed->state = PluginState::Unloading;
             if (removed->plugin) {
+                std::lock_guard call_lock(removed->call_mutex);
                 removed->plugin->set_enabled(false);
             }
         }
@@ -206,23 +210,32 @@ void PluginManager::scan_plugins()
 
 void PluginManager::process_frame(const FrameContext& frame)
 {
-    frame_queue_.push(frame);
+    if (!frame_queue_.push(frame)) ++queue_drops_;
 }
 
 void PluginManager::processing_loop()
 {
     FrameContext frame;
     while (frame_queue_.pop(frame)) {
-        process_frame_now(frame);
+        try {
+            process_frame_now(frame);
+        } catch (const std::exception& error) {
+            ++processing_errors_;
+            clear_result();
+            logger_.log(LogLevel::ERROR, "PIPELINE", error.what());
+        } catch (...) {
+            ++processing_errors_;
+            clear_result();
+            logger_.log(LogLevel::ERROR, "PIPELINE", "Unknown preprocessing/inference exception");
+        }
     }
 }
 
 void PluginManager::process_frame_now(const FrameContext& frame)
 {
     // Take a reference to the active plugin, then release the registry lock
-    // before running inference. Holding it across process() would block every
-    // other plugin call -- including the web UI reading plugin state -- for
-    // the full duration of a detector pass. The shared_ptr keeps the instance
+    // before running inference. Individual plugin calls are serialized by
+    // call_mutex; the registry is not held by inference. The shared_ptr keeps the instance
     // alive if it is unloaded mid-frame, so dlclose waits for us to finish.
     std::shared_ptr<PluginInstance> active;
     std::string active_name;
@@ -239,12 +252,32 @@ void PluginManager::process_frame_now(const FrameContext& frame)
         return;
     }
 
-    PluginResult result = active->plugin->process(frame);
+    PipelineSettings settings;
+    {
+        std::lock_guard lock(pipeline_mutex_);
+        settings = pipeline_settings_;
+    }
+    // First inner stage: optional preparation of an owned raw-frame copy.
+    const FrameContext prepared = preprocess_frame(frame, settings);
+    PluginResult result;
+    {
+        // Second inner stage: the selected dynamically linked detector.
+        // Serialize inference with settings and enable/disable operations.
+        std::lock_guard call_lock(active->call_mutex);
+        if (!active->plugin->is_enabled()) return;
+        result = active->plugin->process(prepared);
+    }
     // The plugin only has to fill in detections; the frame it was given and
     // its own identity are known here.
     result.sequence = frame.sequence;
     result.plugin = active_name;
 
+    // Never publish a result from an instance removed during this inference.
+    // Hold registry -> result locks so unload cannot clear then get overwritten.
+    std::lock_guard registry_lock(mutex_);
+    const auto current = plugins_.find(active_name);
+    if (active_plugin_name_ != active_name || current == plugins_.end() ||
+        current->second != active || active->state != PluginState::Active) return;
     std::lock_guard lock(result_mutex_);
     latest_result_ = std::move(result);
     has_result_ = true;
@@ -272,6 +305,7 @@ void PluginManager::update_plugin_settings(const std::string& name, const nlohma
     std::lock_guard lock(mutex_);
     auto it = plugins_.find(name);
     if (it != plugins_.end() && it->second && it->second->plugin) {
+        std::lock_guard call_lock(it->second->call_mutex);
         it->second->plugin->update_settings(config);
     }
 }
@@ -293,6 +327,7 @@ bool PluginManager::activate_plugin_unlocked(const std::string& name)
         return false;
     }
 
+    std::lock_guard call_lock(it->second->call_mutex);
     it->second->plugin->set_enabled(true);
     it->second->state = PluginState::Active;
     active_plugin_name_ = name;
@@ -307,9 +342,9 @@ bool PluginManager::select_plugin(const std::string& name)
         std::lock_guard lock(mutex_);
         const auto it = plugins_.find(name);
         if (it != plugins_.end() && it->second && it->second->state == PluginState::Active &&
-            it->second->plugin && it->second->plugin->is_enabled() &&
-            active_plugin_name_ == name && plugins_.size() == 1) {
-            return true;
+            it->second->plugin && active_plugin_name_ == name && plugins_.size() == 1) {
+            std::lock_guard call_lock(it->second->call_mutex);
+            if (it->second->plugin->is_enabled()) return true;
         }
         if (!plugins_.contains(name) && !plugin_paths_.contains(name)) {
             logger_.log(LogLevel::ERROR, "PLUGIN_MGR", "Cannot switch to unknown plugin: " + name);
@@ -323,9 +358,8 @@ bool PluginManager::select_plugin(const std::string& name)
 
     logger_.log(LogLevel::INFO, "PLUGIN_MGR", "Loading plugin: " + name);
 
-    // Exclusive mode: the outgoing plugin must leave memory before the next
-    // one is created. Leaving it Loaded kept its threads and .so mapped, and
-    // the UI never saw an Unloaded state between modes.
+    // Only one registry entry remains selected. In-flight references can keep
+    // the outgoing library mapped until the processing worker releases it.
     const std::vector<std::string> outgoing = loaded_plugin_names_except(name);
     for (const auto& outgoing_name : outgoing) {
         if (!unload_plugin_unlocked(outgoing_name)) {
@@ -378,6 +412,7 @@ nlohmann::json PluginManager::get_all_plugin_info() const
     for (const auto& [name, path] : plugin_paths_) {
         const auto loaded = plugins_.find(name);
         if (loaded != plugins_.end() && loaded->second && loaded->second->plugin) {
+            std::lock_guard call_lock(loaded->second->call_mutex);
             const PluginState state = name == loading_plugin_name_
                 ? PluginState::Loading
                 : loaded->second->state;
@@ -401,4 +436,26 @@ nlohmann::json PluginManager::get_all_plugin_info() const
         }
     }
     return result;
+}
+
+void PluginManager::stop_accepting_frames()
+{
+    frame_queue_.close();
+}
+
+nlohmann::json PluginManager::pipeline_info() const
+{
+    std::lock_guard lock(pipeline_mutex_);
+    return {{"settings", pipeline_settings_.json()},
+            {"queue_drops_or_rejections", queue_drops_.load()},
+            {"processing_errors", processing_errors_.load()}};
+}
+
+void PluginManager::update_pipeline_settings(const nlohmann::json& settings)
+{
+    std::lock_guard lock(pipeline_mutex_);
+    const auto next = pipeline_settings_.updated(settings);
+    frame_queue_.configure(static_cast<std::size_t>(next.queue_capacity),
+        next.delivery == "reliable" ? FrameDelivery::Reliable : FrameDelivery::BestEffort);
+    pipeline_settings_ = next;
 }

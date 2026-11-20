@@ -829,6 +829,21 @@ void WebServer::register_routes()
         });
     });
 
+    server.Get("/api/pipeline", [this](const httplib::Request&, httplib::Response& response) {
+        if (!plugin_manager_ready(plugin_manager_, response)) return;
+        send_json(response, 200, plugin_manager_->pipeline_info());
+    });
+
+    server.Post("/api/pipeline", [this](const httplib::Request& request, httplib::Response& response) {
+        if (!plugin_manager_ready(plugin_manager_, response)) return;
+        try {
+            plugin_manager_->update_pipeline_settings(json::parse(request.body));
+            send_json(response, 200, plugin_manager_->pipeline_info());
+        } catch (const std::exception& error) {
+            send_json(response, 400, {{"error", error.what()}});
+        }
+    });
+
     server.Get("/api/plugins", [this](const httplib::Request&, httplib::Response& response) {
         if (!plugin_manager_ready(plugin_manager_, response)) return;
         send_json(response, 200, plugin_manager_->get_all_plugin_info());
