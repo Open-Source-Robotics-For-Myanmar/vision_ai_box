@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RecordingClock.hpp"
 #include <string>
 #include <vector>
 
@@ -23,11 +24,6 @@ struct AvailableCameraSettings {
         return options;
     }
 
-    static const std::vector<int>& color_fps_options()
-    {
-        static const std::vector<int> options = {30, 15};
-        return options;
-    }
 
     static const std::vector<ResolutionOption>& depth_resolutions()
     {
@@ -39,23 +35,18 @@ struct AvailableCameraSettings {
         return options;
     }
 
-    static const std::vector<int>& depth_fps_options()
-    {
-        static const std::vector<int> options = {30, 15};
-        return options;
-    }
 };
 
 struct CameraSettings {
     int color_width{640};
     int color_height{480};
-    int color_fps{30};
+    static constexpr int color_fps = kCaptureFps;
     rs2_format color_format{RS2_FORMAT_BGR8};
 
     bool depth_enabled{false};
     int depth_width{640};
     int depth_height{480};
-    int depth_fps{30};
+    static constexpr int depth_fps = kCaptureFps;
     rs2_format depth_format{RS2_FORMAT_Z16};
 
     bool auto_exposure{true};
@@ -82,17 +73,12 @@ struct AvailableCameraSettings {
         return options;
     }
 
-    static const std::vector<int>& color_fps_options()
-    {
-        static const std::vector<int> options = {30, 15};
-        return options;
-    }
 };
 
 struct CameraSettings {
     int color_width{640};
     int color_height{480};
-    int color_fps{30};
+    static constexpr int color_fps = kCaptureFps;
     int usb_device_index{-1};
     bool auto_exposure{true};
     bool auto_white_balance{true};

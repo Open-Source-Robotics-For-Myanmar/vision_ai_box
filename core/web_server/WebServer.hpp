@@ -118,15 +118,15 @@ public:
 
 private:
     void register_routes();
-    bool is_authenticated(const httplib::Request& request) const;
+    bool is_current_client(const std::string& token) const;
     bool start_camera();
     void stop_camera();
     CameraSettings camera_settings() const;
     bool apply_camera_settings(const CameraSettings& settings);
     nlohmann::json camera_status_json() const;
     nlohmann::json recording_status_json() const;
-    bool stream_h264(httplib::DataSink& sink);
-    bool write_sse(httplib::DataSink& sink);
+    bool stream_h264(httplib::DataSink& sink, const std::string& token);
+    bool write_sse(httplib::DataSink& sink, const std::string& token);
 
     std::shared_ptr<StreamClientStats> register_stream_client();
     void unregister_stream_client(const std::shared_ptr<StreamClientStats>& stats);
@@ -143,12 +143,12 @@ private:
     std::unique_ptr<httplib::Server> server_;
     std::thread server_thread_;
 
-    std::mutex camera_control_mutex_;
+    std::mutex encoder_mutex_;
     std::atomic<std::uint64_t> stream_generation_{0};
 
     mutable std::mutex sessions_mutex_;
-    std::vector<std::string> sessions_;
-    FrameBuffer latest_stream_frame_;
+    std::string active_client_;
+    std::shared_ptr<FrameBuffer> latest_stream_frame_{std::make_shared<FrameBuffer>()};
     mutable std::mutex stream_stats_mutex_;
     std::vector<std::shared_ptr<StreamClientStats>> stream_stats_;
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 
 enum class SystemState
 {
@@ -16,6 +17,7 @@ enum class SystemState
 
 struct ServiceToggles
 {
+    std::mutex camera_control_mutex;
     std::atomic<bool> camera_enabled{false};
     std::atomic<bool> processing_enabled{false};
     std::atomic<bool> running{true};

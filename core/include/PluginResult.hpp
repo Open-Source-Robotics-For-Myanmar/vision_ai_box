@@ -9,7 +9,7 @@
 // the source frame.
 //
 // Normalised rather than pixel coordinates is a hard requirement, not a
-// preference: the MJPEG ladder rescales the stream at runtime in response to
+// preference: the streaming profile rescales the stream at runtime in response to
 // network conditions, so a box measured in capture pixels would be wrong by up
 // to a factor of four by the time it reached the browser. Normalised values
 // also survive window resizing on the client for free.

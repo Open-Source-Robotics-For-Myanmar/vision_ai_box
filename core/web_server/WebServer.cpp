@@ -38,26 +38,9 @@ json serialize_resolution_options(const std::vector<ResolutionOption>& options)
 
 json serialize_available_settings()
 {
-    json payload = {
-        {"color_resolutions", json::array()},
-        {"color_fps_options", json::array()}
-    };
-
-#ifdef CAMERA_USB
-    payload["color_resolutions"] = serialize_resolution_options(AvailableCameraSettings::color_resolutions());
-    for (const int fps : AvailableCameraSettings::color_fps_options()) {
-        payload["color_fps_options"].push_back(fps);
-    }
-#elif defined(CAMERA_REALSENSE)
-    payload["color_resolutions"] = serialize_resolution_options(AvailableCameraSettings::color_resolutions());
-    for (const int fps : AvailableCameraSettings::color_fps_options()) {
-        payload["color_fps_options"].push_back(fps);
-    }
+    json payload = {{"color_resolutions", serialize_resolution_options(AvailableCameraSettings::color_resolutions())}};
+#ifdef CAMERA_REALSENSE
     payload["depth_resolutions"] = serialize_resolution_options(AvailableCameraSettings::depth_resolutions());
-    payload["depth_fps_options"] = json::array();
-    for (const int fps : AvailableCameraSettings::depth_fps_options()) {
-        payload["depth_fps_options"].push_back(fps);
-    }
 #endif
 
     return payload;
@@ -142,20 +125,6 @@ cv::Mat resize_for_stream(const cv::Mat& source, const StreamProfile& profile)
     cv::Mat resized;
     cv::resize(source, resized, size, 0.0, 0.0, cv::INTER_AREA);
     return resized;
-}
-
-int configured_stream_fps()
-{
-    const char* value = std::getenv("VISION_AI_BOX_STREAM_FPS");
-    if (!value || !*value) {
-        return kDefaultStreamFps;
-    }
-
-    try {
-        return std::clamp(std::stoi(value), 1, 60);
-    } catch (const std::exception&) {
-        return kDefaultStreamFps;
-    }
 }
 
 struct StreamController
@@ -252,12 +221,6 @@ std::string make_session_id()
     return std::to_string(generator()) + std::to_string(generator());
 }
 
-std::string configured_value(const char* name, const char* fallback)
-{
-    const char* value = std::getenv(name);
-    return value && *value ? value : fallback;
-}
-
 std::string read_web_page()
 {
     const std::string paths[] = {
@@ -301,14 +264,10 @@ std::string content_type_for_path(const std::string& file_path)
     return "application/octet-stream";
 }
 
-std::string session_from_cookie(const std::string& cookie)
+std::string client_token(const httplib::Request& request)
 {
-    const std::string prefix = "VISION_SESSION=";
-    const std::size_t begin = cookie.find(prefix);
-    if (begin == std::string::npos) return {};
-    const std::size_t value_begin = begin + prefix.size();
-    const std::size_t end = cookie.find(';', value_begin);
-    return cookie.substr(value_begin, end == std::string::npos ? std::string::npos : end - value_begin);
+    const auto header = request.get_header_value("X-Vision-Client");
+    return header.empty() ? request.get_param_value("client") : header;
 }
 
 bool send_sse(httplib::DataSink& sink, const std::string& event, const json& payload)
@@ -337,8 +296,8 @@ WebServer::WebServer(Logger& logger, SelectedCamera& camera, ServiceToggles& tog
     : logger_(logger), camera_(camera), toggles_(toggles), plugin_manager_(plugin_manager),
       base_system_(logger, camera), server_(std::make_unique<httplib::Server>())
 {
-    camera_.register_frame_callback([this](const FrameContext& frame) {
-        latest_stream_frame_.push(frame);
+    camera_.register_frame_callback([buffer = std::weak_ptr<FrameBuffer>(latest_stream_frame_)](const FrameContext& frame) {
+        if (auto live = buffer.lock()) live->push(frame);
     });
 }
 
@@ -353,16 +312,24 @@ bool WebServer::start(std::uint16_t port)
         return true;
     }
 
-    latest_stream_frame_.start();
+    if (server_thread_.joinable()) server_thread_.join();
+    latest_stream_frame_->start();
     register_routes();
     port_ = port;
     server_->new_task_queue = [] { return new httplib::ThreadPool(64); };
 
-    server_thread_ = std::thread([this, port] {
-        if (!server_->listen("0.0.0.0", port)) {
-            logger_.log(LogLevel::ERROR, "WEB_SERVER", "Unable to bind or listen on port " + std::to_string(port));
-            running_ = false;
-        }
+    server_->set_write_timeout(2);
+    server_->set_read_timeout(5);
+    // Bind before starting the thread, including the port-already-in-use case.
+    if (!server_->bind_to_port("0.0.0.0", port)) {
+        running_ = false;
+        latest_stream_frame_->stop();
+        logger_.log(LogLevel::ERROR, "WEB_SERVER", "Unable to bind port " + std::to_string(port));
+        return false;
+    }
+    server_thread_ = std::thread([this] {
+        server_->listen_after_bind();
+        running_ = false;
     });
 
     for (int attempt = 0; attempt < 50 && running_; ++attempt) {
@@ -383,31 +350,25 @@ bool WebServer::start(std::uint16_t port)
 
 void WebServer::stop() noexcept
 {
-    if (!running_.exchange(false)) {
-        return;
-    }
+    running_ = false;
 
     stream_generation_.fetch_add(1, std::memory_order_release);
-    latest_stream_frame_.stop();
-    base_system_.stop_recording();
-    stop_camera();
+    latest_stream_frame_->stop();
     if (server_) {
         server_->stop();
     }
     if (server_thread_.joinable()) {
         server_thread_.join();
     }
+    base_system_.stop_recording();
+    stop_camera();
     logger_.log(LogLevel::INFO, "WEB_SERVER", "Web server stopped");
 }
 
-bool WebServer::is_authenticated(const httplib::Request& request) const
+bool WebServer::is_current_client(const std::string& token) const
 {
-    const std::string session = session_from_cookie(request.get_header_value("Cookie"));
-    if (session.empty()) {
-        return false;
-    }
     std::lock_guard lock(sessions_mutex_);
-    return std::find(sessions_.begin(), sessions_.end(), session) != sessions_.end();
+    return !token.empty() && token == active_client_;
 }
 
 std::shared_ptr<StreamClientStats> WebServer::register_stream_client()
@@ -481,7 +442,7 @@ nlohmann::json WebServer::recording_status_json() const
 
 bool WebServer::start_camera()
 {
-    std::lock_guard lock(camera_control_mutex_);
+    std::lock_guard lock(toggles_.camera_control_mutex);
     if (!toggles_.request_start_camera()) {
         logger_.log(LogLevel::WARN, "CAMERA", "Rejected camera start request due to invalid system state");
         return false;
@@ -512,17 +473,11 @@ bool WebServer::start_camera()
 
 void WebServer::stop_camera()
 {
-    std::lock_guard lock(camera_control_mutex_);
+    std::lock_guard lock(toggles_.camera_control_mutex);
     stream_generation_.fetch_add(1, std::memory_order_release);
-    if (!toggles_.request_stop_camera()) {
-        logger_.log(LogLevel::WARN, "CAMERA", "Camera stop rejected while shutting down");
-        return;
-    }
-
-    if (camera_.is_running()) {
-        camera_.set_processing_enabled(false);
-        camera_.stop();
-    }
+    toggles_.request_stop_camera();
+    camera_.set_processing_enabled(false);
+    camera_.stop();
     logger_.log(LogLevel::INFO, "CAMERA", "Camera turned off");
 }
 
@@ -533,13 +488,13 @@ CameraSettings WebServer::camera_settings() const
 
 bool WebServer::apply_camera_settings(const CameraSettings& settings)
 {
+    std::lock_guard lock(toggles_.camera_control_mutex);
     const bool was_recording = base_system_.is_recording();
     if (was_recording) {
         base_system_.stop_recording();
-        latest_stream_frame_.clear();
+        latest_stream_frame_->clear();
     }
 
-    std::lock_guard lock(camera_control_mutex_);
     const bool was_running = camera_.is_running();
     if (was_running) {
         camera_.set_processing_enabled(false);
@@ -568,15 +523,24 @@ bool WebServer::apply_camera_settings(const CameraSettings& settings)
     }
 
     if (was_recording) {
-        base_system_.start_recording();
+        // Old buffers were cleared on stop: wait for the new frame dimensions.
+        for (int attempt = 0; attempt < 100 && camera_.is_running(); ++attempt) {
+            FrameContext frame;
+            if (camera_.latest_frame(frame) && frame.color && !frame.color->empty())
+                return base_system_.start_recording();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return false;
     }
     return true;
 }
 
-bool WebServer::stream_h264(httplib::DataSink& sink)
+bool WebServer::stream_h264(httplib::DataSink& sink, const std::string& token)
 {
+    std::unique_lock encoder_lock(encoder_mutex_);
+    if (!running_ || !is_current_client(token)) return false;
     const std::uint64_t stream_generation = stream_generation_.load(std::memory_order_acquire);
-    StreamController controller(configured_stream_fps());
+    StreamController controller(kDefaultStreamFps);
     RateMeter delivered_meter;
     const auto stats = register_stream_client();
     H264Stream encoder;
@@ -587,12 +551,12 @@ bool WebServer::stream_h264(httplib::DataSink& sink)
     int encode_width = 0;
     int encode_height = 0;
 
-    while (running_ && camera_.is_running() &&
+    while (running_ && is_current_client(token) && camera_.is_running() &&
            stream_generation == stream_generation_.load(std::memory_order_acquire) &&
            sink.is_writable()) {
         std::shared_ptr<cv::Mat> frame_ptr;
         std::uint64_t sequence = 0;
-        if (!latest_stream_frame_.wait_for_newer(last_sequence, frame_ptr, sequence)) {
+        if (!latest_stream_frame_->wait_for_newer(last_sequence, frame_ptr, sequence)) {
             continue;
         }
         if (!first_frame && sequence > last_sequence + 1) {
@@ -637,6 +601,7 @@ bool WebServer::stream_h264(httplib::DataSink& sink)
             continue;
         }
 
+        if (!is_current_client(token)) break;
         const auto send_start = std::chrono::steady_clock::now();
         if (!sink.write(reinterpret_cast<const char*>(fragment.data()), fragment.size())) {
             break;
@@ -670,7 +635,7 @@ bool WebServer::stream_h264(httplib::DataSink& sink)
     return true;
 }
 
-bool WebServer::write_sse(httplib::DataSink& sink)
+bool WebServer::write_sse(httplib::DataSink& sink, const std::string& token)
 {
     std::uint64_t log_cursor = 0;
     std::uint64_t last_detection_sequence = 0;
@@ -680,6 +645,10 @@ bool WebServer::write_sse(httplib::DataSink& sink)
     auto last_activity = std::chrono::steady_clock::now();
     bool sent_logs = false;
 
+    if (!is_current_client(token)) {
+        send_sse(sink, "session_replaced", {{"reason", "Another client connected"}});
+        return false;
+    }
     const auto logs = logger_.read_logs_after(log_cursor);
     if (!send_sse(sink, "logs", json{{"reset", true}, {"lines", logs}})) {
         return false;
@@ -687,6 +656,10 @@ bool WebServer::write_sse(httplib::DataSink& sink)
     sent_logs = true;
 
     while (running_ && sink.is_writable()) {
+        if (!is_current_client(token)) {
+            send_sse(sink, "session_replaced", {{"reason", "Another client connected"}});
+            return false;
+        }
         const json status = camera_status_json();
         const std::string status_dump = status.dump();
         if (status_dump != last_status) {
@@ -755,12 +728,24 @@ void WebServer::register_routes()
 {
     auto& server = *server_;
 
+    // Serialize control requests with takeover; recheck after taking the lock.
+    const auto client_post = [this, &server](const std::string& path, httplib::Server::Handler handler) {
+        server.Post(path, [this, handler](const httplib::Request& request, httplib::Response& response) {
+            std::lock_guard lock(sessions_mutex_);
+            if (!running_ || active_client_.empty() || client_token(request) != active_client_) {
+                send_json(response, 409, {{"error", "session_replaced"}});
+                return;
+            }
+            handler(request, response);
+        });
+    };
+
     server.set_pre_routing_handler([this](const httplib::Request& request, httplib::Response& response) {
-        const bool public_path = request.path == "/" || request.path == "/app.js" || request.path == "/api/login";
-        if (public_path || is_authenticated(request)) {
+        const bool public_path = request.path == "/" || request.path == "/dashboard" || request.path == "/app.js" || request.path == "/api/client";
+        if (public_path || is_current_client(client_token(request))) {
             return httplib::Server::HandlerResponse::Unhandled;
         }
-        send_json(response, 401, {{"error", "authentication required"}});
+        send_json(response, 409, {{"error", "session_replaced"}});
         return httplib::Server::HandlerResponse::Handled;
     });
 
@@ -794,38 +779,29 @@ void WebServer::register_routes()
         response.set_content(script, "application/javascript; charset=utf-8");
     });
 
-    server.Post("/api/login", [this](const httplib::Request& request, httplib::Response& response) {
-        try {
-            const json credentials = json::parse(request.body);
-            const bool valid = credentials.value("username", "") == configured_value("VISION_AI_BOX_USERNAME", "admin") &&
-                credentials.value("password", "") == configured_value("VISION_AI_BOX_PASSWORD", "change-me");
-            if (!valid) {
-                send_json(response, 401, {{"error", "invalid credentials"}});
-                return;
-            }
-            const std::string session = make_session_id();
-            {
-                std::lock_guard lock(sessions_mutex_);
-                sessions_.push_back(session);
-            }
-            response.set_header("Set-Cookie", "VISION_SESSION=" + session + "; Path=/; HttpOnly; SameSite=Strict");
-            send_json(response, 200, {{"authenticated", true}});
-            logger_.log(LogLevel::INFO, "AUTH", "Authenticated web session created");
-        } catch (const std::exception&) {
-            send_json(response, 400, {{"error", "invalid JSON"}});
+    server.Post("/api/client", [this](const httplib::Request&, httplib::Response& response) {
+        const auto token = make_session_id();
+        {
+            std::lock_guard lock(sessions_mutex_);
+            active_client_ = token;
+            stream_generation_.fetch_add(1, std::memory_order_release);
         }
+        response.set_header("Cache-Control", "no-store");
+        send_json(response, 200, {{"client", token}});
     });
 
     server.Get("/api/logs", [this](const httplib::Request&, httplib::Response& response) {
         send_json(response, 200, logger_.read_all_logs());
     });
 
-    server.Get("/api/events", [this](const httplib::Request&, httplib::Response& response) {
+    server.Get("/api/events", [this](const httplib::Request& request, httplib::Response& response) {
         response.set_header("Cache-Control", "no-cache");
         response.set_header("Connection", "close");
         response.set_header("X-Accel-Buffering", "no");
-        response.set_chunked_content_provider("text/event-stream", [this](std::size_t, httplib::DataSink& sink) {
-            return write_sse(sink);
+        response.set_chunked_content_provider("text/event-stream", [this, token = client_token(request)](std::size_t, httplib::DataSink& sink) {
+            const bool keep = write_sse(sink, token);
+            sink.done();
+            return keep;
         });
     });
 
@@ -834,7 +810,7 @@ void WebServer::register_routes()
         send_json(response, 200, plugin_manager_->pipeline_info());
     });
 
-    server.Post("/api/pipeline", [this](const httplib::Request& request, httplib::Response& response) {
+    client_post("/api/pipeline", [this](const httplib::Request& request, httplib::Response& response) {
         if (!plugin_manager_ready(plugin_manager_, response)) return;
         try {
             plugin_manager_->update_pipeline_settings(json::parse(request.body));
@@ -849,13 +825,13 @@ void WebServer::register_routes()
         send_json(response, 200, plugin_manager_->get_all_plugin_info());
     });
 
-    server.Post("/api/plugins/scan", [this](const httplib::Request&, httplib::Response& response) {
+    client_post("/api/plugins/scan", [this](const httplib::Request&, httplib::Response& response) {
         if (!plugin_manager_ready(plugin_manager_, response)) return;
         plugin_manager_->scan_plugins();
         send_json(response, 200, {{"success", true}, {"plugins", plugin_manager_->get_all_plugin_info()}});
     });
 
-    server.Post("/api/plugins", [this](const httplib::Request& request, httplib::Response& response) {
+    client_post("/api/plugins", [this](const httplib::Request& request, httplib::Response& response) {
         if (!plugin_manager_ready(plugin_manager_, response)) return;
         try {
             const json payload = json::parse(request.body);
@@ -877,7 +853,7 @@ void WebServer::register_routes()
         }
     });
 
-    server.Post("/api/plugins/unload", [this](const httplib::Request& request, httplib::Response& response) {
+    client_post("/api/plugins/unload", [this](const httplib::Request& request, httplib::Response& response) {
         if (!plugin_manager_ready(plugin_manager_, response)) return;
         try {
             const json payload = json::parse(request.body);
@@ -895,7 +871,7 @@ void WebServer::register_routes()
         }
     });
 
-    server.Post("/api/plugins/settings", [this](const httplib::Request& request, httplib::Response& response) {
+    client_post("/api/plugins/settings", [this](const httplib::Request& request, httplib::Response& response) {
         if (!plugin_manager_ready(plugin_manager_, response)) return;
         try {
             const json payload = json::parse(request.body);
@@ -921,7 +897,8 @@ void WebServer::register_routes()
         const std::filesystem::path resolved = std::filesystem::weakly_canonical(std::filesystem::path(request_path));
         const std::filesystem::path root = std::filesystem::current_path() / "media";
         const std::string canonical = resolved.string();
-        const bool is_within_media = canonical.rfind(root.string(), 0) == 0;
+        const auto relative = resolved.lexically_relative(std::filesystem::weakly_canonical(root));
+        const bool is_within_media = !relative.empty() && *relative.begin() != "..";
         if (!std::filesystem::exists(resolved) || !std::filesystem::is_regular_file(resolved) || !is_within_media) {
             send_json(response, 404, {{"error", "media not found"}});
             return;
@@ -933,22 +910,22 @@ void WebServer::register_routes()
         send_json(response, 200, recording_status_json());
     });
 
-    server.Post("/api/record/start", [this](const httplib::Request&, httplib::Response& response) {
+    client_post("/api/record/start", [this](const httplib::Request&, httplib::Response& response) {
         const bool started = base_system_.start_recording();
         send_json(response, started ? 200 : 500, recording_status_json());
     });
 
-    server.Post("/api/record/stop", [this](const httplib::Request&, httplib::Response& response) {
+    client_post("/api/record/stop", [this](const httplib::Request&, httplib::Response& response) {
         const bool stopped = base_system_.stop_recording();
         send_json(response, stopped ? 200 : 500, recording_status_json());
     });
 
-    server.Post("/api/record/restart", [this](const httplib::Request&, httplib::Response& response) {
+    client_post("/api/record/restart", [this](const httplib::Request&, httplib::Response& response) {
         const bool restarted = base_system_.restart_recording();
         send_json(response, restarted ? 200 : 500, recording_status_json());
     });
 
-    server.Post("/api/record/capture", [this](const httplib::Request&, httplib::Response& response) {
+    client_post("/api/record/capture", [this](const httplib::Request&, httplib::Response& response) {
         const bool captured = base_system_.capture_frame();
         send_json(response, captured ? 200 : 500, {{"captured", captured}});
     });
@@ -957,13 +934,17 @@ void WebServer::register_routes()
         send_json(response, 200, serialize_camera_settings_response(camera_settings()));
     });
 
-    server.Post("/api/camera/settings", [this](const httplib::Request& request, httplib::Response& response) {
+    client_post("/api/camera/settings", [this](const httplib::Request& request, httplib::Response& response) {
         try {
             const json payload = json::parse(request.body);
             CameraSettings settings = camera_settings();
             settings.color_width = payload.value("color_width", settings.color_width);
             settings.color_height = payload.value("color_height", settings.color_height);
-            settings.color_fps = payload.value("color_fps", settings.color_fps);
+            if ((payload.contains("color_fps") && payload.at("color_fps") != kCaptureFps) ||
+                (payload.contains("depth_fps") && payload.at("depth_fps") != kCaptureFps)) {
+                send_json(response, 400, {{"error", "Capture FPS is fixed at 30"}});
+                return;
+            }
             settings.auto_exposure = payload.value("auto_exposure", settings.auto_exposure);
             settings.auto_white_balance = payload.value("auto_white_balance", settings.auto_white_balance);
 #ifdef CAMERA_USB
@@ -972,7 +953,7 @@ void WebServer::register_routes()
             settings.depth_enabled = payload.value("depth_enabled", settings.depth_enabled);
             settings.depth_width = payload.value("depth_width", settings.depth_width);
             settings.depth_height = payload.value("depth_height", settings.depth_height);
-            settings.depth_fps = payload.value("depth_fps", settings.depth_fps);
+
 #endif
             const bool applied = apply_camera_settings(settings);
             auto body = serialize_camera_settings_response(settings);
@@ -987,7 +968,7 @@ void WebServer::register_routes()
         send_json(response, 200, camera_status_json());
     });
 
-    server.Post("/api/camera/start", [this](const httplib::Request&, httplib::Response& response) {
+    client_post("/api/camera/start", [this](const httplib::Request&, httplib::Response& response) {
         const bool started = start_camera();
         if (started) {
             stream_generation_.fetch_add(1, std::memory_order_release);
@@ -995,16 +976,18 @@ void WebServer::register_routes()
         send_json(response, started ? 200 : 500, {{"running", camera_.is_running()}});
     });
 
-    server.Post("/api/camera/stop", [this](const httplib::Request&, httplib::Response& response) {
+    client_post("/api/camera/stop", [this](const httplib::Request&, httplib::Response& response) {
         stop_camera();
         send_json(response, 200, {{"running", false}});
     });
 
-    server.Get("/api/camera/stream", [this](const httplib::Request&, httplib::Response& response) {
+    server.Get("/api/camera/stream", [this](const httplib::Request& request, httplib::Response& response) {
         response.set_header("Cache-Control", "no-cache");
         response.set_header("Connection", "close");
-        response.set_chunked_content_provider("video/mp4", [this](std::size_t, httplib::DataSink& sink) {
-            return stream_h264(sink);
+        response.set_chunked_content_provider("video/mp4", [this, token = client_token(request)](std::size_t, httplib::DataSink& sink) {
+            const bool keep = stream_h264(sink, token);
+            sink.done();
+            return keep;
         });
     });
 }

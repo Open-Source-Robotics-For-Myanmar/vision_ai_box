@@ -1,9 +1,6 @@
-const loginForm = document.querySelector('#login-form');
-const loginContainer = document.querySelector('#login-container');
 const dashboard = document.querySelector('#dashboard');
 const viewVideo = document.querySelector('#view-video');
 const viewQuery = document.querySelector('#view-query');
-const loginMessage = document.querySelector('#login-message');
 const cameraToggle = document.querySelector('#camera-toggle');
 const cameraStatus = document.querySelector('#camera-status');
 const cameraFpsIndicator = document.querySelector('#camera-fps-indicator');
@@ -27,6 +24,9 @@ const pluginSettings = document.querySelector('#plugin-settings');
 const scanPluginsBtn = document.querySelector('#scan-plugins-btn');
 const disablePluginBtn = document.querySelector('#disable-plugin-btn');
 const navTabs = Array.from(document.querySelectorAll('.nav-tab'));
+let clientToken = '';
+let sessionClosed = false;
+let streamAbortController = null;
 let queryMedia = [];
 let expandedGroupIds = new Set();
 let selectedPluginName = '';
@@ -95,20 +95,39 @@ function startLiveClock() {
   setInterval(updateClock, 1000);
 }
 
-// HTTP Helper Function
-async function request(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    ...options
-  });
+// Page-local ownership token: another tab replaces this client too.
+function clientUrl(path) {
+  return path + (path.includes('?') ? '&' : '?') + 'client=' + encodeURIComponent(clientToken);
+}
 
+function closeClientSession() {
+  if (sessionClosed) return;
+  sessionClosed = true;
+  streamActive = false;
+  clearTimeout(streamReconnectTimerId);
+  streamReconnectTimerId = null;
+  if (dashboardSource) dashboardSource.close();
+  dashboardSource = null;
+  stopH264Stream();
+  stopOverlayLoop();
+  stopRecordingTimer();
+  document.querySelectorAll('video').forEach(video => video.pause());
+  viewVideo.hidden = true;
+  if (viewQuery) viewQuery.hidden = true;
+  document.querySelector('#client-message').hidden = false;
+}
+
+async function request(path, options = {}) {
+  if (sessionClosed) throw new Error('Session closed; reconnect to take control.');
+  const response = await fetch(path, {
+    ...options,
+    headers: { ...options.headers, 'X-Vision-Client': clientToken }
+  });
+  if (response.status === 409) closeClientSession();
   const contentType = response.headers.get('content-type') || '';
   const payload = contentType.includes('application/json') ? await response.json() : await response.text();
-
-  if (!response.ok) {
-    throw new Error(typeof payload === 'string' ? payload : JSON.stringify(payload));
-  }
-
+  if (!response.ok) throw new Error(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  if (sessionClosed) throw new Error('Session closed');
   return payload;
 }
 
@@ -164,7 +183,7 @@ function applySessionLogs(payload) {
 // AI Overlay
 //
 // Detections arrive on their own SSE channel instead of being drawn into the
-// JPEG server-side. That keeps inference rate and stream rate independent,
+// video server-side. That keeps inference rate and stream rate independent,
 // costs the device no extra encoding, and leaves the boxes crisp even when the
 // adaptive ladder has degraded the video quality.
 let dashboardSource = null;
@@ -211,6 +230,8 @@ function appendPendingChunks() {
 }
 
 function stopH264Stream() {
+  if (streamAbortController) streamAbortController.abort();
+  streamAbortController = null;
   if (streamReader) {
     streamReader.cancel().catch(() => {});
     streamReader = null;
@@ -233,55 +254,65 @@ function stopH264Stream() {
   }
 }
 
-async function pumpH264Stream(response) {
+async function pumpH264Stream(response, abortController) {
+  if (response.status === 409) { closeClientSession(); return; }
+  if (sessionClosed) { if (response.body) await response.body.cancel(); return; }
   if (!response.ok || !response.body) {
     reconnectStream();
     return;
   }
 
-  streamReader = response.body.getReader();
-  while (streamActive && streamReader) {
-    const { value, done } = await streamReader.read();
-    if (done) break;
+  const reader = response.body.getReader();
+  streamReader = reader;
+  while (streamActive && !abortController.signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done || abortController.signal.aborted || sessionClosed) break;
     if (value && value.byteLength > 0) {
       pendingChunks.push(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
       appendPendingChunks();
     }
   }
 
-  if (streamActive) {
+  if (streamActive && !abortController.signal.aborted) {
     reconnectStream();
   }
 }
 
 function startH264Stream() {
+  if (sessionClosed) return;
   if (!stream || !window.MediaSource || !MediaSource.isTypeSupported(H264_MIME)) {
     console.error('This browser cannot play the live H.264 stream');
     return;
   }
 
   stopH264Stream();
+  streamAbortController = new AbortController();
+  const abortController = streamAbortController;
   mediaSource = new MediaSource();
+  const currentMediaSource = mediaSource;
   streamObjectUrl = URL.createObjectURL(mediaSource);
   stream.src = streamObjectUrl;
   stream.hidden = false;
 
   mediaSource.addEventListener('sourceopen', async () => {
     try {
-      sourceBuffer = mediaSource.addSourceBuffer(H264_MIME);
+      if (sessionClosed || abortController.signal.aborted) return;
+      sourceBuffer = currentMediaSource.addSourceBuffer(H264_MIME);
       sourceBuffer.mode = 'sequence';
       sourceBuffer.addEventListener('updateend', appendPendingChunks);
       const response = await fetch('/api/camera/stream?generation=' + Date.now(), {
-        credentials: 'same-origin'
+        headers: { 'X-Vision-Client': clientToken },
+        signal: abortController.signal
       });
-      await pumpH264Stream(response);
+      if (abortController.signal.aborted) return;
+      await pumpH264Stream(response, abortController);
     } catch (error) {
-      if (streamActive) reconnectStream();
+      if (streamActive && !abortController.signal.aborted) reconnectStream();
     }
   }, { once: true });
 }
 
-// The <img> is object-fit: contain, so the picture is letterboxed inside the
+// The <video> is object-fit: contain, so the picture is letterboxed inside the
 // element. Detections are normalised against the source frame, which maps them
 // onto that inner rectangle -- using the element box instead would push boxes
 // into the black bars.
@@ -357,6 +388,7 @@ function renderOverlay() {
 }
 
 function applyRecording(recording) {
+  if (sessionClosed) return;
   if (!recordStatusIndicator || !recordStatusText || !recordToggleBtn) return;
   const active = Boolean(recording && recording.recording);
   const elapsedSeconds = Number((recording && recording.elapsed_seconds) || 0);
@@ -380,12 +412,13 @@ function applyRecording(recording) {
   }
 
   const canRecord = canRecordWithCamera();
-  recordToggleBtn.disabled = !canRecord;
+  recordToggleBtn.disabled = !active && !canRecord;
   if (restartRecordBtn) restartRecordBtn.disabled = !canRecord;
   if (captureBtn) captureBtn.disabled = !canRecord;
 }
 
 function applyStatus(status) {
+  if (sessionClosed) return;
   const enabled = Boolean(status.enabled);
   const connected = Boolean(status.connected);
   const running = Boolean(status.running);
@@ -479,11 +512,11 @@ function canRecordWithCamera() {
   if (!cameraToggle.checked) return false;
 
   const state = cameraStatus.textContent.trim();
-  const recordingState = recordStatusText ? recordStatusText.textContent.trim() : '';
-  return state === 'Running' || recordingState === 'Recording';
+  return state === 'Running';
 }
 
 function reconnectStream() {
+  if (sessionClosed) return;
   if (!streamActive || !stream || streamReconnectTimerId) return;
 
   streamReconnectTimerId = setTimeout(() => {
@@ -494,9 +527,10 @@ function reconnectStream() {
 }
 
 function startDashboardEvents() {
-  if (dashboardSource) return;
+  if (dashboardSource || sessionClosed) return;
 
-  dashboardSource = new EventSource('/api/events');
+  dashboardSource = new EventSource(clientUrl('/api/events'));
+  dashboardSource.addEventListener('session_replaced', closeClientSession);
   dashboardSource.addEventListener('status', (event) => {
     try { applyStatus(JSON.parse(event.data)); } catch (error) {}
   });
@@ -514,11 +548,13 @@ function startDashboardEvents() {
   });
   dashboardSource.onerror = () => {
     detections = [];
+    request('/api/camera/status').catch(() => {});
   };
   startOverlayLoop();
 }
 
 function showView(viewName) {
+  if (sessionClosed) return;
   const isVideo = viewName === 'video';
   const isQuery = viewName === 'query';
 
@@ -865,7 +901,7 @@ function renderQueryTree(node, depth = 0) {
   } else {
     const link = document.createElement('a');
     link.className = 'query-file-link';
-    link.href = '/api/query/media?path=' + encodeURIComponent(node.path);
+    link.href = clientUrl('/api/query/media?path=' + encodeURIComponent(node.path));
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     link.textContent = node.name;
@@ -1079,34 +1115,24 @@ if (queryMediaList) {
   });
 }
 
-if (window.location.pathname === '/dashboard') {
-  loginContainer.hidden = true;
-  dashboard.hidden = false;
-  showView('video');
-  startDashboardEvents();
-  refreshStatus().catch(error => { cameraStatus.textContent = error.message; });
-  refreshPluginList().catch(() => {});
-}
-
-// Login Event Listener
-loginForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  loginMessage.textContent = '';
-
-  const formData = Object.fromEntries(new FormData(loginForm));
-
+async function connectClient() {
   try {
-    await request('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData),
-      credentials: 'same-origin'
-    });
-    window.location.replace('/dashboard');
+    const response = await fetch('/api/client', { method: 'POST' });
+    if (!response.ok) throw new Error('Unable to connect');
+    clientToken = (await response.json()).client;
+    dashboard.hidden = false;
+    showView('video');
+    startDashboardEvents();
+    await refreshStatus();
+    await refreshPluginList();
   } catch (error) {
-    loginMessage.textContent = 'Login failed';
+    if (!sessionClosed) {
+      closeClientSession();
+      document.querySelector('#client-message p').textContent = 'Connection failed. Reconnect to try again.';
+    }
   }
-});
+}
+connectClient();
 
 // Camera Toggle Event Listener
 cameraToggle.addEventListener('change', async () => {
@@ -1127,7 +1153,8 @@ cameraToggle.addEventListener('change', async () => {
 });
 
 recordToggleBtn.addEventListener('click', async () => {
-  if (!canRecordWithCamera()) {
+  const currentRecording = recordStatusText.textContent === 'Recording';
+  if (!currentRecording && !canRecordWithCamera()) {
     alert('camera must be power on (or) open your camera by check in checkbox');
     return;
   }
@@ -1137,7 +1164,6 @@ recordToggleBtn.addEventListener('click', async () => {
   recordToggleBtn.disabled = true;
 
   try {
-    const currentRecording = recordStatusText.textContent === 'Recording';
     const endpoint = currentRecording ? '/api/record/stop' : '/api/record/start';
     await request(endpoint, { method: 'POST' });
     await refreshStatus();

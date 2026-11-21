@@ -44,21 +44,25 @@ cmake --build build-realsense -j"$(nproc)"
 ./build-realsense/bin/vision_ai_box
 ```
 
-```
-export VISION_AI_BOX_USERNAME=admin
-export VISION_AI_BOX_PASSWORD='admin'
-export VISION_AI_BOX_PORT=8080
-```
+## Dashboard: one client, no login
 
-The embedded web server listens on port `8080` by default. Set
-`VISION_AI_BOX_PORT` to select another port. Credentials default to
-`admin` / `change-me`; configure them with `VISION_AI_BOX_USERNAME` and
-`VISION_AI_BOX_PASSWORD` before starting the application.
+Open `http://<device-ip>:8080/` or `/dashboard`. Set `VISION_AI_BOX_PORT` to
+change the port. Username/password, login form, login API and authentication
+cookies have been removed. Anyone who can reach the service can take control.
 
-Open `http://<device-ip>:8080/` from a device on the same network. The login
-creates an HttpOnly session cookie and redirects to `/dashboard`. Protected
-endpoints include `/api/camera/status`, `/api/camera/start`,
-`/api/camera/stop`, `/api/camera/stream`, and `/api/plugins`.
+Each page load calls `POST /api/client` once and receives a page-local token.
+Opening another browser, tab or reloading replaces the previous client. The
+old page closes its SSE/video connections and displays Reconnect; its API
+requests return HTTP `409`. Automatic SSE/video retries reuse the token and
+never claim ownership again. Pressing Reconnect explicitly takes control back.
+Already admitted control commands finish before takeover is accepted. Video
+teardown is cooperative: a current encode/write may finish before closing.
+There is one H.264 encoder at a time. Recording and AI continue across takeover.
+Already downloaded media cannot be withdrawn from an old client.
+
+API clients claim once with `POST /api/client`, then send the returned `client`
+as `X-Vision-Client: <token>`. EventSource and media links use `?client=<token>`.
+This token coordinates ownership; it is not username/password authentication.
 
 Plugin libraries are discovered at application startup but are not loaded. The
 Plugin page lists available libraries with no active selection. Selecting a
@@ -79,15 +83,15 @@ flowchart TD
     B --> C[First inner stage: optional downscale / filter]
     C --> D[Second inner stage: selected dynamic .so model]
     D --> E[Normalized detections → SSE → overlay]
-    A --> F[Raw recording queue → video codec → file]
-    A --> G[Latest raw preview → resize → H.264 / MPEG-TS]
+    A --> F[Latest raw frame → clock-paced 30 FPS writer → file]
+    A --> G[Latest raw preview → resize → H.264 / fragmented MP4]
     A --> H[Snapshot → JPEG]
 ```
 
 The two inner stages run sequentially in the AI worker. This keeps preprocessing
 and model execution ordered with one pending-frame queue. A separate preprocessing
 worker and second queue can be added if profiling shows a throughput benefit.
-Recording and preview subscribe directly to raw capture; changing AI quality does
+Recording samples the latest raw frame and preview subscribes to raw capture; changing AI quality does
 not change their resolution or the physical camera settings.
 
 ### First inner stage: preprocessing and QoS
@@ -130,7 +134,7 @@ lossless acquisition with a slower detector, use a separate durable recording/sp
 and offline inference; finite RAM cannot preserve an unlimited producer backlog.
 
 Compression is deliberately on the **output branches**. The current preview uses
-H.264 in MPEG-TS, recording uses `VideoWriter`, and snapshots use JPEG. The local
+H.264 in fragmented MP4, recording uses `VideoWriter`, and snapshots use JPEG. The local
 model consumes decoded pixels. `compressed` is not an AI preprocessing mode:
 compressing then immediately decoding adds work and can lose image detail. For a
 future remote detector, add an encoder → transport → decoder branch with its own
@@ -138,7 +142,7 @@ QoS and measurements. Merely lowering JPEG quality is not a reliability policy.
 
 ### Runtime configuration
 
-The existing login/session authentication also protects the new endpoints:
+The active client token is required for these endpoints:
 
 - `GET /api/pipeline`: settings, queue drops/rejections and processing errors.
 - `POST /api/pipeline`: validated partial settings update, without restarting the camera.
@@ -177,38 +181,58 @@ exceptions are counted/logged instead of escaping the worker thread. Native
 crashes and permanently hung plugins still need process isolation or a watchdog.
 All plugins must be built with a compatible C++/OpenCV ABI.
 
-**The existing models are prototypes:** `example` emits a synthetic moving box;
-`face_recognition` returns no detections. Object detection and the depth plugin
-directories are not enabled in `plugins/CMakeLists.txt`. This pipeline does not
-supply trained model weights or a real inference backend.
+The `example` plugin emits a synthetic box and `face_recognition` is still a
+prototype. The restored optional `object_detection` plugin runs YOLO26 Large
+using ONNX Runtime CPU. Enable it with `-DVISION_BUILD_YOLO26=ON` and
+`-DONNXRUNTIME_ROOT=/absolute/path/to/onnxruntime`. See the
+[YOLO26 download/export, build and smoke-test guide](plugins/object_detection/README.md).
 
 ### Capture lifetime and outputs
 
-Camera sequence numbers continue across restarts, so the preview's "newer frame"
-comparison and recording duplicate detection do not stall waiting for a reset
-sequence to catch up. A finished USB worker is joined before replacement. During
-application shutdown, the AI queue closes first to release blocked reliable-mode
-producers, then capture and server shutdown proceed.
+Capture and recording are fixed at **30 FPS**. FPS option lists and the
+`VISION_AI_BOX_STREAM_FPS` override are removed. Camera settings requests trying
+to change `color_fps` or `depth_fps` away from 30 receive HTTP `400`. Status still
+shows measured camera/delivery FPS; hardware can deliver fewer unique frames.
+Adaptive preview delivery does not change camera or recording FPS.
 
-Recording has its own eight-frame drop-oldest queue. Its writer currently uses
-30 FPS regardless of camera FPS; dropped frames or a different capture rate can
-therefore distort playback duration. Preview has a per-client latest-frame
-mailbox and adaptive H.264 output. RealSense depth is currently supplied to the AI
-callback but not streamed or recorded by those output paths.
+Recording uses a steady-clock timeline. It opens the writer with a valid frame
+before reporting success, and writes 30 output slots per second. Capture stalls,
+reliable-mode backpressure or missed worker ticks repeat the previous image, so
+missing footage becomes frozen video instead of accelerated playback. Stop fills
+the final partial slot; successful default-pipeline writes give a duration within
+one frame (about 33.4 ms) of the recording timeline. Slow codecs/disks can delay
+commands and finalization. This does not guarantee 30 unique camera frames/s.
+
+Camera off/unplug leaves an active recording running with its last frame until
+Stop. The Stop Recording control remains available when the camera is off.
+Changing camera settings closes the old file and starts another after a new frame
+arrives. Files are stored in `media/recorded_videos/` and snapshots in
+`media/capture_photos/`, relative to the process working directory. Unique filename
+suffixes avoid overwrites during rapid capture/restart. Snapshots finish on the
+HTTP worker before success is returned; there are no detached snapshot workers.
+
+`VISION_AI_BOX_FOURCC` overrides the default `mp4v` codec. An optional
+`VISION_AI_BOX_GSTREAMER_PIPELINE` must preserve the fixed 30 FPS timeline; a
+custom pipeline that changes timing is outside the default duration guarantee.
+RealSense depth is supplied to AI callbacks but not recorded/streamed by these
+color output paths. H.264 live video uses browser MediaSource (MSE).
+
+Camera sequence numbers continue across restarts. Start/stop/settings/reconnect
+are serialized between the HTTP handlers and camera monitor, and exited camera
+workers are joined before reuse. Stream callbacks hold weak ownership instead of
+a raw web-server pointer. The server binds before launching its thread and joins
+it on shutdown even after a listening failure. Signals only set a signal-safe
+flag. Shutdown closes the AI queue first to release reliable-mode producers,
+joins the monitor, closes HTTP streams/workers, then stops recording and capture.
+The recording thread is joined during destruction. Hung native plugins or a
+blocked hardware driver still require a watchdog/process-level recovery.
 
 ### Follow-up priorities
 
-1. Implement a real detector plugin with model input/output metadata and measured
-   latency; validate normalized boxes after its own resize/letterbox transform.
-2. Centralize camera start/stop/settings/reconnect ownership. The monitor and HTTP
-   control paths still share camera settings/state and need a coordinated command
-   path before more runtime camera features are added.
-3. Use capture timestamps and actual FPS for recording; track end-to-end frame age,
-   stage latency and queue depth, then set explicit latency budgets.
-4. Add pipeline controls and persistence if operators need to manage these settings
-   from the dashboard; keep transport compression and AI quality separate.
-5. Validate USB reconnect, RealSense alignment, rapid model switching and overload
-   with physical hardware and actual models before deployment.
+1. Measure YOLO26 accuracy/latency and validate overlay boxes on physical hardware.
+2. Measure recorded file duration with `ffprobe`, including unplug/stall intervals.
+3. Add UI/persistence for the existing pipeline settings if operators need them.
+4. Test RealSense alignment, rapid model switching and overload before deployment.
 
 ## Validation
 
@@ -224,3 +248,19 @@ ctest --test-dir build-usb --output-on-failure
 release on close/reconfiguration, invalid settings, bypass buffer isolation,
 aspect-preserving resizing and depth preservation. It does not require a camera.
 Hardware behavior and model-switch concurrency still need integration testing.
+
+Additional regression checks:
+
+```sh
+c++ -std=c++20 -Wall -Wextra -Icore/include tests/recording_clock_test.cpp -o /tmp/recording_clock_test
+/tmp/recording_clock_test
+node --check core/web_server/app.js
+node tests/client_ui_test.cjs
+# Takes over the current client; requires the running application:
+python3 tests/client_takeover_test.py --url http://127.0.0.1:8080
+```
+
+The restored timeline and mocked UI tests pass. Full CMake configuration currently
+stops because this environment lacks the OpenCV development package. The real HTTP,
+camera, recorded-video duration and YOLO model smoke tests remain unverified here.
+Also test port-in-use startup and SIGTERM while recording on the target device.

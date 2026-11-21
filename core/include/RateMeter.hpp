@@ -3,7 +3,7 @@
 #include <chrono>
 #include <deque>
 
-// Sliding-window rate estimate shared by the camera backends and the MJPEG
+// Sliding-window rate estimate shared by the camera backends and the H.264
 // stream.
 //
 // N samples inside the window bound N-1 intervals, so dividing the sample

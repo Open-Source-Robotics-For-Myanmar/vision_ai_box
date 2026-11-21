@@ -1,7 +1,8 @@
 #pragma once
 
 #include "FrameContext.hpp"
-#include "FrameQueue.hpp"
+#include "RecordingClock.hpp"
+#include <condition_variable>
 
 #ifdef CAMERA_USB
 #include "UsbCamera.hpp"
@@ -40,9 +41,9 @@ public:
     nlohmann::json discover_media_library() const;
 
 private:
-    void on_frame_received(const FrameContext& frame);
-    void open_writer_if_needed(const cv::Mat& frame);
-    void close_writer();
+    bool start_recording_locked();
+    bool stop_recording_locked();
+    void write_until(std::chrono::steady_clock::time_point now);
     void recording_loop();
     static std::string make_recording_stamp();
     static int resolve_fourcc();
@@ -51,13 +52,15 @@ private:
     Logger& logger_;
     SelectedCamera& camera_;
     mutable std::mutex mutex_;
-    std::mutex writer_mutex_;
+    std::condition_variable condition_;
+    bool stopping_{false};
     std::thread recording_thread_;
     std::atomic<bool> recording_active_{false};
-    std::atomic<std::uint64_t> last_written_sequence_{0};
+    std::uint64_t frames_written_{0};
+    std::shared_ptr<cv::Mat> recording_frame_;
     std::chrono::steady_clock::time_point recording_start_time_{};
     std::string current_recording_file_;
     cv::VideoWriter writer_;
-    FrameQueue recording_queue_{8};
+
 };
 

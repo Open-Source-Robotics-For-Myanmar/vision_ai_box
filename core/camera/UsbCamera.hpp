@@ -46,7 +46,7 @@ private:
     CameraSettings settings_;
     cv::VideoCapture capture_;
     mutable std::mutex capture_mutex_;
-    std::mutex lifecycle_mutex_;
+    mutable std::mutex lifecycle_mutex_;
     std::mutex callbacks_mutex_;
     std::mutex latest_frame_mutex_;
     std::vector<std::function<void(const FrameContext&)>> frame_callbacks_;

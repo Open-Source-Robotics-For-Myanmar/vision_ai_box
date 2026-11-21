@@ -21,19 +21,19 @@
 
 namespace
 {
-ServiceToggles* active_toggles = nullptr;
+volatile std::sig_atomic_t shutdown_requested = 0;
 
 void handle_signal(int)
 {
-    if (active_toggles) {
-        active_toggles->request_shutdown();
-    }
+    shutdown_requested = 1;
 }
 
 
 void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggles& toggles)
 {
     while (toggles.running.load(std::memory_order_acquire)) {
+        std::unique_lock control_lock(toggles.camera_control_mutex);
+        if (!toggles.running.load()) break;
         const bool enabled = toggles.camera_enabled.load(std::memory_order_acquire);
         const bool connected = camera.check_device_state();
         const bool running = camera.is_running();
@@ -46,6 +46,7 @@ void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggle
             toggles.camera_error = false;
             toggles.processing_enabled = false;
             camera.set_processing_enabled(false);
+            control_lock.unlock();
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
             continue;
         }
@@ -56,6 +57,7 @@ void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggle
             toggles.camera_error = true;
             toggles.processing_enabled = false;
             camera.set_processing_enabled(false);
+            control_lock.unlock();
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -72,6 +74,7 @@ void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggle
                 camera.set_processing_enabled(false);
                 logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
             }
+            control_lock.unlock();
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
@@ -81,10 +84,12 @@ void camera_reconnect_loop(Logger& logger, SelectedCamera& camera, ServiceToggle
             toggles.processing_enabled = false;
             camera.set_processing_enabled(false);
             logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
+            control_lock.unlock();
             std::this_thread::sleep_for(std::chrono::seconds(2));
             continue;
         }
 
+        control_lock.unlock();
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 }
@@ -95,7 +100,6 @@ int main()
     ServiceToggles toggles;
     toggles.camera_enabled = true;
     Logger logger;
-    active_toggles = &toggles;
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
@@ -158,42 +162,46 @@ int main()
 
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box is ready at http://<device-ip>:" + std::to_string(web_port));
 
-    // Start the camera and monitor its state
-    if (camera.check_device_state()) {
-        if (camera.start()) {
-            toggles.camera_error = false;
-            toggles.processing_enabled = true;
-            camera.set_processing_enabled(true);
-            logger.log(LogLevel::INFO, "CAMERA", "Camera Connected");
+    {
+        std::lock_guard control_lock(toggles.camera_control_mutex);
+        // Start the camera and monitor its state
+        if (camera.check_device_state()) {
+            if (camera.start()) {
+                toggles.camera_error = false;
+                toggles.processing_enabled = true;
+                camera.set_processing_enabled(true);
+                logger.log(LogLevel::INFO, "CAMERA", "Camera Connected");
+            } else {
+                toggles.camera_error = true;
+                toggles.processing_enabled = false;
+                camera.set_processing_enabled(false);
+                logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
+            }
         } else {
             toggles.camera_error = true;
             toggles.processing_enabled = false;
             camera.set_processing_enabled(false);
             logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
         }
-    } else {
-        toggles.camera_error = true;
-        toggles.processing_enabled = false;
-        camera.set_processing_enabled(false);
-        logger.log(LogLevel::WARN, "CAMERA", "Camera Unplugged");
+
     }
 
     std::thread camera_monitor_thread(camera_reconnect_loop, std::ref(logger), std::ref(camera), std::ref(toggles));
 
-    while (toggles.running.load(std::memory_order_acquire)) {
+    while (toggles.running.load(std::memory_order_acquire) && !shutdown_requested) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
-    toggles.request_stop_camera();
+    toggles.request_shutdown();
     toggles.running.store(false, std::memory_order_release);
     toggles.camera_error.store(false, std::memory_order_release);
 
+    // Release reliable-mode blocked producers BEFORE joining the monitor/camera.
     plugin_manager.stop_accepting_frames();
+    if (camera_monitor_thread.joinable()) camera_monitor_thread.join();
     web_server.stop();
     camera.set_processing_enabled(false);
     camera.stop();
-    if (camera_monitor_thread.joinable()) camera_monitor_thread.join();
-    active_toggles = nullptr;
     logger.log(LogLevel::INFO, "SYSTEM", "vision_ai_box stopped cleanly");
 
     return 0;

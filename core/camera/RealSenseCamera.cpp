@@ -22,11 +22,14 @@ RealSenseCamera::RealSenseCamera(Logger& logger, CameraSettings settings)
 
 CameraSettings RealSenseCamera::settings() const
 {
+    std::lock_guard lock(lifecycle_mutex_);
     return settings_;
 }
 
 bool RealSenseCamera::apply_settings(const CameraSettings& settings)
 {
+    std::lock_guard lock(lifecycle_mutex_);
+    if (running_) return false;
     settings_ = settings;
     depth_enabled_ = settings_.depth_enabled;
     return true;
@@ -147,6 +150,8 @@ void RealSenseCamera::stop() noexcept
     }
     initialized_ = false;
     align_to_color_.reset();
+    std::lock_guard frame_lock(latest_frame_mutex_);
+    latest_frame_.reset();
 }
 
 void RealSenseCamera::set_processing_enabled(bool enabled) noexcept { processing_enabled_ = enabled; }
@@ -161,6 +166,7 @@ double RealSenseCamera::measured_fps() const
 
 bool RealSenseCamera::check_device_state() const noexcept
 {
+    std::lock_guard lock(lifecycle_mutex_);
     try {
         const auto devices = ctx_.query_devices();
         if (devices.size() == 0) {

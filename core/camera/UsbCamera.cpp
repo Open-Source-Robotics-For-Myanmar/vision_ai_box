@@ -22,11 +22,14 @@ UsbCamera::UsbCamera(Logger& logger, CameraSettings settings)
 
 CameraSettings UsbCamera::settings() const
 {
+    std::lock_guard lock(lifecycle_mutex_);
     return settings_;
 }
 
 bool UsbCamera::apply_settings(const CameraSettings& settings)
 {
+    std::lock_guard lock(lifecycle_mutex_);
+    if (running_) return false;
     settings_ = settings;
     return true;
 }
@@ -109,6 +112,8 @@ void UsbCamera::stop() noexcept
     std::lock_guard capture_lock(capture_mutex_);
     capture_.release();
     initialized_ = false;
+    std::lock_guard frame_lock(latest_frame_mutex_);
+    latest_frame_.reset();
 }
 
 void UsbCamera::set_processing_enabled(bool enabled) noexcept { processing_enabled_ = enabled; }
@@ -145,6 +150,7 @@ double UsbCamera::measured_fps() const
 
 bool UsbCamera::check_device_state() const noexcept
 {
+    std::lock_guard lock(lifecycle_mutex_);
     const int preferred = settings_.usb_device_index;
     if (preferred >= 0) {
         return device_exists_for_index(preferred);
@@ -156,53 +162,62 @@ bool UsbCamera::check_device_state() const noexcept
 void UsbCamera::acquisition_loop()
 {
     std::uint64_t sequence = latest_sequence_.load(std::memory_order_acquire);
-    while (running_) {
-        if (!processing_enabled_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            continue;
-        }
+    try {
+        while (running_) {
+            if (!processing_enabled_) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
 
-        cv::Mat frame;
-        {
-            std::lock_guard lock(capture_mutex_);
-            if (!capture_.read(frame) || frame.empty()) {
-                const auto now = std::chrono::steady_clock::now();
-                if (now - last_read_warning_ >= std::chrono::seconds(1)) {
-                    logger_.log(LogLevel::WARN, "CAMERA", "Hot unplug detected: camera disconnected");
-                    last_read_warning_ = now;
+            cv::Mat frame;
+            {
+                std::lock_guard lock(capture_mutex_);
+                if (!capture_.read(frame) || frame.empty()) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - last_read_warning_ >= std::chrono::seconds(1)) {
+                        logger_.log(LogLevel::WARN, "CAMERA", "Hot unplug detected: camera disconnected");
+                        last_read_warning_ = now;
+                    }
+                    running_ = false;
+                    capture_.release();
+                    initialized_ = false;
+                    break;
                 }
-                running_ = false;
-                capture_.release();
-                initialized_ = false;
-                break;
+            }
+
+            FrameContext next;
+            next.sequence = ++sequence;
+            next.color = std::make_shared<cv::Mat>(frame);
+            {
+                std::lock_guard lock(fps_mutex_);
+                fps_meter_.record(std::chrono::steady_clock::now());
+            }
+
+            {
+                std::lock_guard lock(latest_frame_mutex_);
+                latest_frame_ = next.color;
+                latest_sequence_.store(next.sequence, std::memory_order_release);
+            }
+
+            std::vector<std::function<void(const FrameContext&)>> callbacks;
+            {
+                std::lock_guard lock(callbacks_mutex_);
+                callbacks = frame_callbacks_;
+            }
+
+            for (const auto& callback : callbacks) {
+                if (callback) {
+                    callback(next);
+                }
             }
         }
-
-        FrameContext next;
-        next.sequence = ++sequence;
-        next.color = std::make_shared<cv::Mat>(frame);
-        {
-            std::lock_guard lock(fps_mutex_);
-            fps_meter_.record(std::chrono::steady_clock::now());
-        }
-
-        {
-            std::lock_guard lock(latest_frame_mutex_);
-            latest_frame_ = next.color;
-            latest_sequence_.store(next.sequence, std::memory_order_release);
-        }
-
-        std::vector<std::function<void(const FrameContext&)>> callbacks;
-        {
-            std::lock_guard lock(callbacks_mutex_);
-            callbacks = frame_callbacks_;
-        }
-
-        for (const auto& callback : callbacks) {
-            if (callback) {
-                callback(next);
-            }
-        }
+    } catch (const std::exception& error) {
+        logger_.log(LogLevel::ERROR, "CAMERA", error.what());
     }
+    running_ = false;
+    std::lock_guard lock(capture_mutex_);
+    capture_.release();
+    initialized_ = false;
+
 }
 

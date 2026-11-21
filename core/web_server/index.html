@@ -29,15 +29,6 @@
     /* Main Layout */
     main { padding: 8px 0 10px; max-width: 1600px; margin: 0 auto; }
 
-    /* Login Form Styles */
-    .login-wrapper { display: grid; place-items: center; min-height: 80vh; }
-    .login-card { background: var(--panel-bg); padding: 2rem; border: 1px solid var(--panel-border); border-radius: 6px; width: 320px; display: grid; gap: 1rem; }
-    .login-card h2 { color: var(--accent-blue); font-size: 18px; text-align: center; }
-    .form-group { display: grid; gap: 4px; }
-    .form-group input { padding: 8px; background: #121212; border: 1px solid var(--panel-border); color: #fff; border-radius: 4px; }
-    .btn-login { padding: 8px; background: var(--accent-blue); border: 0; color: #fff; font-weight: bold; cursor: pointer; border-radius: 4px; }
-    .btn-login:hover { background: var(--accent-blue-hover); }
-
     /* Dashboard Layout Grid */
     .dashboard-grid {
       display: grid;
@@ -296,24 +287,12 @@
   </header>
 
   <main>
-    <!-- 1. Authentication Login Screen -->
-    <div id="login-container" class="login-wrapper">
-      <form id="login-form" class="login-card">
-        <h2>DeepBlue Vision Login</h2>
-        <div class="form-group">
-          <label>Username</label>
-          <input name="username" autocomplete="username" required value="admin">
-        </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input name="password" type="password" autocomplete="current-password" required>
-        </div>
-        <button type="submit" class="btn-login">Login</button>
-        <p id="login-message" style="color: #ff5252; font-size: 11px; text-align: center;"></p>
-      </form>
+    <div id="client-message" hidden role="alert" style="padding:24px;text-align:center">
+      <p>This session was closed because another client connected.</p>
+      <button type="button" onclick="location.reload()">Reconnect</button>
     </div>
 
-    <!-- 2. Dashboard -->
+    <!-- Dashboard -->
     <div id="view-video">
       <div id="dashboard" class="dashboard-grid" hidden>
       
