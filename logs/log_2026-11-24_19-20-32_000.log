@@ -1,0 +1,59 @@
+[2026-11-24 19:20:32.918] [INFO] [SYSTEM] Session log started: logs/log_2026-11-24_19-20-32_000.log
+[2026-11-24 19:20:32.918] [INFO] [SYSTEM] vision_ai_box starting up
+[2026-11-24 19:20:32.918] [INFO] [PLUGIN_MGR] Plugin discovered: face_recognition
+[2026-11-24 19:20:32.918] [INFO] [PLUGIN_MGR] Plugin discovered: example_plugin
+[2026-11-24 19:20:32.939] [INFO] [WEB_SERVER] Web server listening on port 8080
+[2026-11-24 19:20:32.939] [INFO] [SYSTEM] vision_ai_box is ready at http://<device-ip>:8080
+[2026-11-24 19:20:33.042] [INFO] [CAMERA] Opened USB camera device index 0
+[2026-11-24 19:20:33.244] [INFO] [CAMERA] Camera Connected
+[2026-11-24 19:21:14.555] [INFO] [BASE_SYSTEM] Captured photo saved: media/capture_photos/captured_24-11-2026_07-21-14-PM_0_1795524674530549.jpeg
+[2026-11-24 19:52:03.388] [INFO] [WEB_SERVER] H.264 stream ended: frames=59, skipped=60, bytes=205751, quality=80, step=0
+[2026-11-24 19:52:22.997] [INFO] [PLUGIN_MGR] Loading plugin: face_recognition
+[2026-11-24 19:52:22.997] [INFO] [FACE_PLUGIN] Face Recognition Plugin Constructed
+[2026-11-24 19:52:22.997] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:22.997] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:22.997] [INFO] [FACE_PLUGIN] Face Recognition Plugin initialized
+[2026-11-24 19:52:22.997] [INFO] [PLUGIN_MGR] Plugin successfully loaded: face_recognition
+[2026-11-24 19:52:22.997] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:22.997] [INFO] [PLUGIN_MGR] Active plugin switched to: face_recognition
+[2026-11-24 19:52:22.997] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:25.998] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:28.998] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:31.999] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:34.999] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:36.676] [INFO] [PLUGIN_MGR] Loading plugin: example_plugin
+[2026-11-24 19:52:36.676] [INFO] [PLUGIN_MGR] Unloading plugin: face_recognition
+[2026-11-24 19:52:38.000] [INFO] [FACE_PLUGIN] Face Recognition Plugin Destroyed
+[2026-11-24 19:52:38.000] [INFO] [PLUGIN_MGR] Plugin unloaded: face_recognition
+[2026-11-24 19:52:38.000] [INFO] [EXAMPLE_PLUGIN] Example Plugin Constructed
+[2026-11-24 19:52:38.000] [INFO] [EXAMPLE_PLUGIN] I am Example Plugin
+[2026-11-24 19:52:38.000] [INFO] [EXAMPLE_PLUGIN] I am Example Plugin
+[2026-11-24 19:52:38.000] [INFO] [EXAMPLE_PLUGIN] Example Plugin initialized
+[2026-11-24 19:52:38.000] [INFO] [PLUGIN_MGR] Plugin successfully loaded: example_plugin
+[2026-11-24 19:52:38.000] [INFO] [EXAMPLE_PLUGIN] I am Example Plugin
+[2026-11-24 19:52:38.000] [INFO] [PLUGIN_MGR] Active plugin switched to: example_plugin
+[2026-11-24 19:52:38.000] [INFO] [EXAMPLE_PLUGIN] I am Example Plugin
+[2026-11-24 19:52:41.001] [INFO] [EXAMPLE_PLUGIN] I am Example Plugin
+[2026-11-24 19:52:44.001] [INFO] [EXAMPLE_PLUGIN] I am Example Plugin
+[2026-11-24 19:52:46.440] [INFO] [PLUGIN_MGR] Loading plugin: face_recognition
+[2026-11-24 19:52:46.440] [INFO] [PLUGIN_MGR] Unloading plugin: example_plugin
+[2026-11-24 19:52:47.002] [INFO] [EXAMPLE_PLUGIN] Example Plugin Destroyed
+[2026-11-24 19:52:47.002] [INFO] [PLUGIN_MGR] Plugin unloaded: example_plugin
+[2026-11-24 19:52:47.002] [INFO] [FACE_PLUGIN] Face Recognition Plugin Constructed
+[2026-11-24 19:52:47.002] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:47.002] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:47.002] [INFO] [FACE_PLUGIN] Face Recognition Plugin initialized
+[2026-11-24 19:52:47.002] [INFO] [PLUGIN_MGR] Plugin successfully loaded: face_recognition
+[2026-11-24 19:52:47.002] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:47.002] [INFO] [PLUGIN_MGR] Active plugin switched to: face_recognition
+[2026-11-24 19:52:47.002] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:50.003] [INFO] [FACE_PLUGIN] I am Face Recognigiton Plugin
+[2026-11-24 19:52:52.122] [INFO] [PLUGIN_MGR] Unloading plugin: face_recognition
+[2026-11-24 19:52:53.003] [INFO] [FACE_PLUGIN] Face Recognition Plugin Destroyed
+[2026-11-24 19:52:53.003] [INFO] [PLUGIN_MGR] Plugin unloaded: face_recognition
+[2026-11-24 19:53:13.152] [INFO] [WEB_SERVER] H.264 stream ended: frames=796, skipped=901, bytes=2663817, quality=85, step=0
+[2026-11-24 19:54:17.306] [INFO] [CAMERA] Camera turned off
+[2026-11-24 19:54:17.306] [INFO] [WEB_SERVER] Web server stopped
+[2026-11-24 19:54:17.306] [INFO] [SYSTEM] vision_ai_box stopped cleanly
+[2026-11-24 19:54:17.306] [INFO] [CAMERA] Camera turned off
+[2026-11-24 19:54:17.306] [INFO] [WEB_SERVER] Web server stopped
