@@ -1,7 +1,10 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <vector>
+
+#include "StreamClock.hpp"
 
 #include <opencv2/core.hpp>
 
@@ -34,6 +37,7 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
     int fps() const { return fps_; }
+    std::int64_t last_pts() const { return clock_.last(); }
 
     static int even(int value);
     static int bitrate_for(int width, int height, int fps, int quality);
@@ -45,7 +49,7 @@ private:
     int width_{0};
     int height_{0};
     int fps_{0};
-    std::int64_t pts_{0};
+    StreamClock clock_;
 
     AVCodecContext* codec_{nullptr};
     AVFormatContext* format_{nullptr};

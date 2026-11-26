@@ -1,6 +1,7 @@
 #include "H264Stream.hpp"
 
 #include <algorithm>
+#include <chrono>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -122,7 +123,6 @@ void H264Stream::close()
         stream_ = nullptr;
     }
     io_ = nullptr;
-    pts_ = 0;
 }
 
 bool H264Stream::write_header()
@@ -152,6 +152,7 @@ bool H264Stream::open(int width, int height, int fps, int bitrate)
     width_ = even(width);
     height_ = even(height);
     fps_ = std::clamp(fps, 1, 60);
+    clock_.reset(fps_);
     mux_buffer_.clear();
     init_segment_.clear();
 
@@ -258,6 +259,7 @@ bool H264Stream::drain_packets(std::vector<std::uint8_t>& out)
             return false;
         }
 
+        packet_->duration = 1;
         av_packet_rescale_ts(packet_, codec_->time_base, stream_->time_base);
         packet_->stream_index = stream_->index;
         if (av_interleaved_write_frame(format_, packet_) < 0) {
@@ -294,7 +296,7 @@ bool H264Stream::encode(const cv::Mat& bgr, std::vector<std::uint8_t>& fragment)
     const int src_stride[] = { static_cast<int>(packed.step) };
     sws_scale(scaler_, src_slices, src_stride, 0, height_, frame_->data, frame_->linesize);
 
-    frame_->pts = pts_++;
+    frame_->pts = clock_.pts_for(std::chrono::steady_clock::now());
     if (avcodec_send_frame(codec_, frame_) < 0) {
         return false;
     }

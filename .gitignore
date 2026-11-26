@@ -1,0 +1,6 @@
+media/
+!media/.gitkeep
+
+
+logs/
+!logs/.gitkeep

@@ -6,6 +6,7 @@
 #include "Logger.hpp"
 #include "PluginManager.hpp"
 #include "RateMeter.hpp"
+#include "StreamClock.hpp"
 #include "httplib.h"
 
 #include <algorithm>
@@ -620,8 +621,9 @@ bool WebServer::stream_h264(httplib::DataSink& sink, const std::string& token)
         stats->last_frame_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
             delivered_at.time_since_epoch()).count(), std::memory_order_release);
 
-        next_frame_deadline = std::max(next_frame_deadline, delivered_at);
-        next_frame_deadline += std::chrono::microseconds(1000000 / profile.target_fps);
+        next_frame_deadline = schedule_next_frame(
+            next_frame_deadline, delivered_at,
+            std::chrono::microseconds(1000000 / profile.target_fps));
         std::this_thread::sleep_until(next_frame_deadline);
     }
 

@@ -34,6 +34,24 @@ cmake --build build-usb -j"$(nproc)"
 ./build-usb/bin/vision_ai_box
 ```
 
+### One-command automation
+
+`./automation` does configure → build → ctest → UI regression checks → starts the
+binary on `http://<device-ip>:8080/` from the project root (Ctrl-C stops it).
+Useful overrides:
+
+```sh
+PORT=18080 ./automation                 # different HTTP port
+CAMERA=REALSENSE LIBREALSENSE_DIR=/path/to/librealsense ./automation
+BUILD_TYPE=Debug VISION_OPTIMIZE_SIZE=OFF ./automation
+VISION_BUILD_FACE_DETECTION=ON ONNXRUNTIME_ROOT=/path/to/ort ./automation
+./automation --no-run                   # build and test only
+./automation --help                     # all options
+```
+
+`BUILD_DIR`, `JOBS`, `BUILD_TYPE` and the `VISION_*` CMake options can also be
+set as environment variables; they are forwarded to CMake unchanged.
+
 
 Build and run RealSense mode:
 
@@ -217,6 +235,8 @@ custom pipeline that changes timing is outside the default duration guarantee.
 RealSense depth is supplied to AI callbacks but not recorded/streamed by these
 color output paths. H.264 live video uses browser MediaSource (MSE).
 
+Preview timestamps come from a steady clock rather than the encoded-frame count, so a missed encode slot becomes a timestamp gap instead of permanently slowing the media timeline. The dashboard also keeps the playhead near the live edge and trims old buffered ranges after a stall.
+
 Camera sequence numbers continue across restarts. Start/stop/settings/reconnect
 are serialized between the HTTP handlers and camera monitor, and exited camera
 workers are joined before reuse. Stream callbacks hold weak ownership instead of
@@ -247,6 +267,8 @@ ctest --test-dir build-usb --output-on-failure
 `pipeline_tests` covers best-effort eviction, reliable FIFO/backpressure, producer
 release on close/reconfiguration, invalid settings, bypass buffer isolation,
 aspect-preserving resizing and depth preservation. It does not require a camera.
+
+`stream_clock_tests` covers monotonic H.264 PTS, timestamp gaps during producer stalls, bounded media-timeline drift and deadline scheduling without cumulative overshoot. It does not require a camera.
 Hardware behavior and model-switch concurrency still need integration testing.
 
 Additional regression checks:

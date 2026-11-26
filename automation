@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Configure, build, test and run the vision_ai_box service.
+#
+# Common use:
+#   ./automation                       # Release USB build + ctest + run on :8080
+#   CAMERA=REALSENSE ./automation      # RealSense backend
+#   PORT=18080 ./automation            # custom HTTP port
+#   ./automation --no-run              # build/test only
+#   VISION_BUILD_FACE_DETECTION=ON ONNXRUNTIME_ROOT=/path/to/ort ./automation
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+
+CAMERA="${CAMERA:-USB}"
+CAMERA="${CAMERA^^}"
+BUILD_TYPE="${BUILD_TYPE:-Release}"
+BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build-${CAMERA,,}}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
+PORT="${PORT:-8080}"
+RUN_TESTS=1
+RUN_BINARY=1
+CLEAN=0
+
+log() { printf '\n==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: ./automation [options]
+
+Options:
+  -h, --help            Show this help
+  -c, --camera NAME     USB or REALSENSE (default: USB, or $CAMERA)
+  -t, --build-type T    Release or Debug (default: Release, or $BUILD_TYPE)
+  -d, --build-dir DIR   CMake build directory (default: ./build-<camera>)
+  -j, --jobs N          Parallel build jobs (default: nproc)
+  -p, --port PORT       HTTP port for the binary (default: 8080)
+      --clean           Remove the build directory before configuring
+      --no-tests        Skip ctest / UI regression checks
+      --no-run          Build and test, but do not start the service
+
+Environment:
+  VISION_OPTIMIZE_SIZE=OFF       Disable -Os/-ffunction-sections/-s
+  VISION_BUILD_YOLO26=ON         Build object_detection plugin (needs ONNXRUNTIME_ROOT)
+  VISION_BUILD_FACE_DETECTION=ON Build face_detection plugin (needs ONNXRUNTIME_ROOT)
+  ONNXRUNTIME_ROOT=DIR           Extracted ONNX Runtime C/C++ SDK
+  LIBREALSENSE_DIR=DIR           librealsense source root (RealSense backend)
+  VISION_AI_BOX_FOURCC=mp4v      Recording codec override
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -c|--camera) CAMERA="${2:-}"; [[ -n "$CAMERA" ]] || die "--camera needs a value"; CAMERA="${CAMERA^^}"; shift 2 ;;
+    -t|--build-type) BUILD_TYPE="${2:-}"; [[ -n "$BUILD_TYPE" ]] || die "--build-type needs a value"; shift 2 ;;
+    -d|--build-dir) BUILD_DIR="${2:-}"; [[ -n "$BUILD_DIR" ]] || die "--build-dir needs a value"; shift 2 ;;
+    -j|--jobs) JOBS="${2:-}"; [[ -n "$JOBS" ]] || die "--jobs needs a value"; shift 2 ;;
+    -p|--port) PORT="${2:-}"; [[ -n "$PORT" ]] || die "--port needs a value"; shift 2 ;;
+    --clean) CLEAN=1; shift ;;
+    --no-tests) RUN_TESTS=0; shift ;;
+    --no-run) RUN_BINARY=0; shift ;;
+    *) die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+case "$CAMERA" in
+  USB|REALSENSE) ;;
+  *) die "CAMERA must be USB or REALSENSE, got: $CAMERA" ;;
+esac
+
+command -v cmake >/dev/null 2>&1 || die "cmake is not installed"
+[[ -f "$PROJECT_ROOT/CMakeLists.txt" ]] || die "CMakeLists.txt not found in $PROJECT_ROOT"
+
+if [[ $CLEAN -eq 1 && -d "$BUILD_DIR" ]]; then
+  log "Removing build directory: $BUILD_DIR"
+  rm -rf -- "$BUILD_DIR"
+fi
+
+cmake_args=(
+  -S "$PROJECT_ROOT"
+  -B "$BUILD_DIR"
+  -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+  -DCAMERA="$CAMERA"
+  -DBUILD_TESTING=ON
+)
+[[ -n "${VISION_OPTIMIZE_SIZE:-}" ]] && cmake_args+=("-DVISION_OPTIMIZE_SIZE=$VISION_OPTIMIZE_SIZE")
+[[ -n "${VISION_BUILD_YOLO26:-}" ]] && cmake_args+=("-DVISION_BUILD_YOLO26=$VISION_BUILD_YOLO26")
+[[ -n "${VISION_BUILD_FACE_DETECTION:-}" ]] && cmake_args+=("-DVISION_BUILD_FACE_DETECTION=$VISION_BUILD_FACE_DETECTION")
+[[ -n "${ONNXRUNTIME_ROOT:-}" ]] && cmake_args+=("-DONNXRUNTIME_ROOT=$ONNXRUNTIME_ROOT")
+[[ -n "${LIBREALSENSE_DIR:-}" ]] && cmake_args+=("-DLIBREALSENSE_DIR=$LIBREALSENSE_DIR")
+
+log "Configure: $CAMERA / $BUILD_TYPE -> $BUILD_DIR"
+cmake "${cmake_args[@]}"
+
+log "Build with $JOBS job(s)"
+cmake --build "$BUILD_DIR" --parallel "$JOBS"
+
+if [[ $RUN_TESTS -eq 1 ]]; then
+  log "CTest"
+  ctest --test-dir "$BUILD_DIR" --output-on-failure
+  if command -v node >/dev/null 2>&1 && [[ -f "$PROJECT_ROOT/core/web_server/app.js" ]]; then
+    log "JavaScript syntax check"
+    node --check "$PROJECT_ROOT/core/web_server/app.js"
+  fi
+  if command -v node >/dev/null 2>&1 && [[ -f "$PROJECT_ROOT/tests/client_ui_test.cjs" ]]; then
+    log "Mocked client UI regression test"
+    node "$PROJECT_ROOT/tests/client_ui_test.cjs"
+  fi
+fi
+
+if [[ $RUN_BINARY -eq 0 ]]; then
+  log "Build/test finished (--no-run); binary: $BUILD_DIR/bin/vision_ai_box"
+  exit 0
+fi
+
+binary="$BUILD_DIR/bin/vision_ai_box"
+[[ -x "$binary" ]] || die "binary not found: $binary"
+cd "$PROJECT_ROOT"
+
+log "Starting vision_ai_box on port $PORT (Ctrl-C to stop)"
+exec env VISION_AI_BOX_PORT="$PORT" "$binary"

@@ -33,6 +33,7 @@ let selectedPluginName = '';
 let toggleRequestActive = false;
 let streamActive = false;
 let streamReconnectTimerId = null;
+let liveEdgeTimerId = null;
 let recordingRequestActive = false;
 let recordingTimerId = null;
 let recordingStartedAt = null;
@@ -198,6 +199,9 @@ let streamObjectUrl = '';
 
 const DETECTION_STALE_MS = 2000;
 const H264_MIME = 'video/mp4; codecs="avc1.42C028"';
+const LIVE_EDGE_MAX_LAG_S = 1.0;
+const LIVE_EDGE_TARGET_S = 0.35;
+const LIVE_EDGE_TRIM_S = 5;
 
 function applyDetections(payload) {
   detections = payload && Array.isArray(payload.detections) ? payload.detections : [];
@@ -229,7 +233,32 @@ function appendPendingChunks() {
   }
 }
 
+// MSE plays back media timestamps, so any stall or slow encode leaves the
+// player permanently behind. Keep the playhead near the live edge and drop
+// old buffered ranges instead of growing an ever-lagging queue.
+function keepLiveEdge() {
+  if (sessionClosed || !stream || !sourceBuffer || sourceBuffer.updating) return;
+  const buffered = stream.buffered;
+  if (!buffered || buffered.length === 0) return;
+  const end = buffered.end(buffered.length - 1);
+  if (!Number.isFinite(end)) return;
+  if (end - stream.currentTime > LIVE_EDGE_MAX_LAG_S) {
+    try {
+      stream.currentTime = Math.max(0, end - LIVE_EDGE_TARGET_S);
+    } catch (error) {}
+    return;
+  }
+  const start = buffered.start(0);
+  if (Number.isFinite(start) && stream.currentTime - start > LIVE_EDGE_TRIM_S) {
+    try {
+      sourceBuffer.remove(start, stream.currentTime - 1);
+    } catch (error) {}
+  }
+}
+
 function stopH264Stream() {
+  clearInterval(liveEdgeTimerId);
+  liveEdgeTimerId = null;
   if (streamAbortController) streamAbortController.abort();
   streamAbortController = null;
   if (streamReader) {
@@ -286,6 +315,7 @@ function startH264Stream() {
   }
 
   stopH264Stream();
+  liveEdgeTimerId = setInterval(keepLiveEdge, 500);
   streamAbortController = new AbortController();
   const abortController = streamAbortController;
   mediaSource = new MediaSource();
@@ -299,7 +329,10 @@ function startH264Stream() {
       if (sessionClosed || abortController.signal.aborted) return;
       sourceBuffer = currentMediaSource.addSourceBuffer(H264_MIME);
       sourceBuffer.mode = 'sequence';
-      sourceBuffer.addEventListener('updateend', appendPendingChunks);
+      sourceBuffer.addEventListener('updateend', () => {
+        appendPendingChunks();
+        keepLiveEdge();
+      });
       const response = await fetch('/api/camera/stream?generation=' + Date.now(), {
         headers: { 'X-Vision-Client': clientToken },
         signal: abortController.signal
